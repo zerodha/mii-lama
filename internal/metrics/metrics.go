@@ -121,7 +121,6 @@ func (m *Manager) Query(query string) (float64, error) {
 
 	// Check the status code of the response.
 	if resp.StatusCode != http.StatusOK {
-		// fmt.Println(string(resp.Body))
 		return 0, fmt.Errorf("http request failed with status code: %d", resp.StatusCode)
 	}
 
@@ -130,8 +129,6 @@ func (m *Manager) Query(query string) (float64, error) {
 	if err = json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
 		return 0, fmt.Errorf("unmarshalling response failed: %w", err)
 	}
-
-	fmt.Println(promResp)
 
 	// Check if the response contains any metrics.
 	if len(promResp.Data.Result) == 0 {

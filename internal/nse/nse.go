@@ -208,7 +208,6 @@ func (mgr *Manager) PushHWMetrics(host string, data models.HWPromResp) error {
 
 	if resp.StatusCode != http.StatusOK {
 		mgr.lo.Error("metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
-		fmt.Println(r.ResponseDesc, r.Errors, r.ResponseCode)
 		switch r.ResponseCode {
 		// Handle case where token is invalid.
 		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
