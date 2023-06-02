@@ -1,0 +1,43 @@
+version: '3'
+
+networks:
+  monitor-net:
+    driver: bridge
+
+volumes:
+  prometheus_data: {}
+  grafana_data: {}
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.43.0
+    container_name: prometheus
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    expose:
+      - 9090
+    networks:
+      - monitor-net
+
+  mii-lama:
+    image: ghcr.io/zerodha/mii-lama:latest
+    container_name: mii-lama
+    depends_on:
+      - prometheus
+    volumes:
+      - ./mii-lama:/etc/mii-lama
+    command:
+      - '--config=/etc/mii-lama/config.toml'
+    restart: unless-stopped
+    networks:
+      - monitor-net

@@ -37,3 +37,27 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
+dockers:
+  - image_templates: ["ghcr.io/zerodha/mii-lama:{{ .Tag }}-amd64"]
+    goarch: amd64
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--platform=linux/amd64"
+    extra_files:
+      - config.sample.toml
+
+docker_manifests:
+  - name_template: ghcr.io/zerodha/mii-lama:{{ .Tag }}
+    image_templates:
+      - ghcr.io/zerodha/mii-lama:{{ .Tag }}-amd64
+      - ghcr.io/zerodha/mii-lama:{{ .Tag }}-arm64
+  - name_template: ghcr.io/zerodha/mii-lama:latest
+    image_templates:
+      - ghcr.io/zerodha/mii-lama:{{ .Tag }}-amd64

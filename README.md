@@ -4,22 +4,6 @@
 
 `mii-lama` is a Golang based utility, developed to bridge the gap between [Prometheus](https://prometheus.io/)-based metrics and the LAMA API Gateway.
 
-## TOC
-
-- [mii-lama](#mii-lama)
-  - [TOC](#toc)
-  - [Features](#features)
-  - [Installation](#installation)
-  - [Pre-requisites](#pre-requisites)
-  - [Usage](#usage)
-  - [Configuration](#configuration)
-  - [Considerations](#considerations)
-    - [Node Exporter](#node-exporter)
-    - [Specifying Hosts](#specifying-hosts)
-  - [Contributing](#contributing)
-  - [License](#license)
-
-
 ## Features
 
 - Extract metrics from your existing Prometheus-compatible storage solution with the help of pre-defined [PromQL](https://prometheus.io/docs/prometheus/latest/querying/basics/) queries.
@@ -30,22 +14,132 @@
 
 You can grab the latest binaries for Linux, MacOS and Windows from the [Releases](https://github.com/zerodha/mii-lama/releases) section.
 
-## Pre-requisites
+## Setting Up
 
-To use `mii-lama`, you need to have a working instance of a Prometheus-compatible storage system (like Thanos or VictoriaMetrics) and access to a LAMA API Gateway credentials.
+### node-exporter
 
-All Prometheus-compatible storage systems expose metrics via a [HTTP endpoint](https://prometheus.io/docs/prometheus/latest/querying/api/#instant-queries) (`/api/v1/query`). `mii-lama` uses this endpoint to fetch metrics from the storage system. The endpoint URL and credentials (if any) are specified in the configuration file.
+`mii-lama` uses metrics exposed by `node-exporter`. The following steps will help you set up `mii-lama` with `node-exporter` on all the instances that require to be monitored. Follow these steps for installing and running `node-exporter` on each host:
 
-```toml
-[prometheus]
-endpoint = "http://prometheus.broker.internal" # Endpoint for Prometheus API
-username = "redacted" # Optional Basic Auth credentials
-password = "redacted" # Optional Basic Auth credentials
+#### Install node-exporter
+
+1. **Download Node Exporter:** Node Exporter can be downloaded from the Prometheus official site. Visit the [Prometheus download page](https://prometheus.io/download/#node_exporter) and download the latest version of Node Exporter compatible with your system.
+
+2. **Extract the downloaded file:** Use tar to extract the downloaded file. For example, if you downloaded the file to your Downloads directory, you can use the following command:
+
+    ```
+    tar -xvf ~/Downloads/node_exporter-*.*-amd64.tar.gz
+    ```
+
+3. **Move the Node Exporter binary:** Move the `node_exporter` binary to a directory on your system path, like `/usr/local/bin`. For example:
+
+    ```
+    mv node_exporter-*.*-amd64/node_exporter /usr/local/bin/
+    ```
+
+4. **Clean up:** After you've moved the binary, you can delete the rest of the extracted contents:
+
+    ```
+    rm -r node_exporter-*.*-amd64
+    ```
+
+#### Running Node Exporter as a service
+
+For production use, it's recommended to run Node Exporter as a system service. If you're using a system with systemd, you can follow these steps to run Node Exporter as a service:
+
+1. **Create a systemd service file for Node Exporter:** Open a new service file for Node Exporter with a command like:
+
+    ```
+    sudo nano /etc/systemd/system/node_exporter.service
+    ```
+
+    Then, add the following contents to the file:
+
+    ```
+    [Unit]
+    Description=Node Exporter
+    Requires=node_exporter.socket
+
+    [Service]
+    User=node_exporter
+    EnvironmentFile=/etc/sysconfig/node_exporter
+    ExecStart=/usr/sbin/node_exporter --web.systemd-socket $OPTIONS
+
+    [Install]
+    WantedBy=multi-user.target
+    ```
+
+    Save and close the file when you're done.
+
+2. **Reload systemd:** After you've created the service file, tell systemd to reload its configuration with:
+
+    ```
+    sudo systemctl daemon-reload
+    ```
+
+3. **Start Node Exporter:** Start the Node Exporter service with:
+
+    ```
+    sudo systemctl start node_exporter
+    ```
+
+4. **Enable Node Exporter on boot:** If you want Node Exporter to start automatically when your system boots, use:
+
+    ```
+    sudo systemctl enable node_exporter
+    ```
+
+You can check the status of the Node Exporter service at any time with the following command:
+
+```
+sudo systemctl status node_exporter
 ```
 
-`mii-lama` supports not just Prometheus, but any storage system that is compatible with Prometheus [remote_write](https://prometheus.io/docs/practices/remote_write/) API specification. Some examples of such systems are [Grafana Mimir](https://grafana.com/oss/mimir/) and [VictoriaMetrics](https://victoriametrics.com/).
+This should show that the service is active (running). This starts Node Exporter on its default port, 9100. You can check if Node Exporter is running by visiting `http://localhost:9100/metrics` in your web browser. This page displays the raw metrics that Node Exporter exposes to Prometheus.
 
-`mii-lama` uses the LAMA API Gateway to send metrics to the LAMA platform. The API Gateway URL and credentials (if any) are specified in the configuration file.
+
+### Storing Metrics
+
+The metrics exposed by `node-metrics` on all host machines should be centrally shipped and stored on a central metrics timeseries database. `node-exporter` exports metrics in Prometheus format so any Prometheus API compatible storage system will work.
+
+The [docker-compose.yml](./deploy/docker-compose.yml) shows an example of how to spin up a Prometheus server to store metrics.
+
+
+#### Configuring Prometheus
+
+The default config file for Prometheus is located at [prometheus.yml](./deploy/prometheus/prometheus.yml). For each host machine, you need to add a section in `scrape_configs`. Here's an example:
+
+```yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "kite-db"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["kite.db.internal:9100"]
+```
+
+This config will _pull_ the metrics from the host `kite.db.internal` on port `9100` where `node-exporter` is running.
+
+#### Configuring mii-lama
+
+`mii-lama` needs a config file to specify which hosts' metrics need to be collected. This can be specified in `metrics.hardware.hosts` section:
+
+```tom
+hosts = ["kite.db.internal:9100"]
+```
+
+### Running the stack
+
+Once the above configuration is in-place, the following command will spin up Prometheus server and `mii-lama` agent as docker containers. 
+
+```
+cd deploy
+docker-compose up
+```
+
+Monitor the logs of both the services and ensure that the metrics are being collected. To push the metrics to LAMA API gateway, configure the following section with proper credentials:
 
 ```toml
 [lama.nse]
@@ -53,56 +147,11 @@ url = "https://lama.nse.internal" # Endpoint for NSE LAMA API Gateway
 login_id = "redacted"
 member_id = "redacted"
 password = "redacted"
-timeout = "30s" # Timeout for HTTP requests
-exchange_id = 1 # 1=National Stock Exchange
 ```
 
-## Usage
+## Advanced Instructions
 
-The utility can be run as a standalone binary. The configuration file is passed to the utility via the `--config` flag.
-
-```bash
-$ mii-lama --config config.toml
-```
-
-## Configuration
-
-You can configure `mii-lama` by creating a `config.toml` file with the following fields. Please refer to the [example config](./config.sample.toml) for more details.
-
-| Config Field                | Example                                                                                                                                                                                       | Description                                                                               |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `app.log_level`             | `"debug"`                                                                                                                                                                                     | The logging level. To enable debug logging, set the level as `debug`.                     |
-| `app.sync_interval`         | `"5m"`                                                                                                                                                                                        | The interval at which the app should fetch data from the metrics store.                   |
-| `app.retry_interval`        | `"5s"`                                                                                                                                                                                        | The interval at which the app should retry if the previous request failed.                |
-| `app.max_retries`           | `3`                                                                                                                                                                                           | The maximum number of retries for a failed request.                                       |
-| `lama.nse.url`              | `"https://lama.nse.internal"`                                                                                                                                                                 | The endpoint for NSE LAMA API Gateway.                                                    |
-| `lama.nse.login_id`         | `"redacted"`                                                                                                                                                                                  | The login ID for the LAMA NSE API Gateway.                                                |
-| `lama.nse.member_id`        | `"redacted"`                                                                                                                                                                                  | The member ID for the LAMA NSE API Gateway.                                               |
-| `lama.nse.password`         | `"redacted"`                                                                                                                                                                                  | The password for the LAMA NSE API Gateway.                                                |
-| `lama.nse.timeout`          | `"30s"`                                                                                                                                                                                       | The timeout for HTTP requests to the LAMA NSE API Gateway.                                |
-| `lama.nse.exchange_id`      | `1`                                                                                                                                                                                           | The exchange ID for the LAMA NSE API Gateway. `1` corresponds to National Stock Exchange. |
-| `prometheus.endpoint`       | `"http://prometheus.broker.internal"`                                                                                                                                                         | The endpoint for Prometheus API.                                                          |
-| `prometheus.query_path`     | `"/api/v1/query"`                                                                                                                                                                             | The endpoint for Prometheus query API.                                                    |
-| `prometheus.username`       | `"redacted"`                                                                                                                                                                                  | The HTTP Basic Auth username for Prometheus API.                                          |
-| `prometheus.password`       | `"redacted"`                                                                                                                                                                                  | The HTTP Basic Auth password for Prometheus API.                                          |
-| `prometheus.timeout`        | `"10s"`                                                                                                                                                                                       | The timeout for HTTP requests to the Prometheus API.                                      |
-| `prometheus.max_idle_conns` | `10`                                                                                                                                                                                          | The maximum number of idle connections allowed to the Prometheus API.                     |
-| `metrics.hardware.hosts`    | `["kite-db-172.x.y.z"]`                                                                                                                                                                       | List of hosts for which to fetch hardware metrics.                                        |
-| `metrics.hardware.cpu`      | `'100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle", hostname="%s"}[5m])))'`                                                                                                             | The PromQL query for fetching CPU usage metrics.                                          |
-| `metrics.hardware.memory`   | `'(1 - ((node_memory_MemFree_bytes{hostname="%s"} + node_memory_Buffers_bytes{hostname="%s"} + node_memory_Cached_bytes{hostname="%s"}) / node_memory_MemTotal_bytes{hostname="%s"})) * 100'` | The PromQL query for fetching memory usage metrics.                                       |
-| `metrics.hardware.disk`     | `'100 - ((node_filesystem_avail_bytes{hostname="%s",device!~"rootfs"} * 100) / node_filesystem_size_bytes{hostname="%s",device!~"rootfs"})'`                                                  | The PromQL query for fetching disk usage metrics.                                         |
-| `metrics.hardware.uptime`   | `'(node_time_seconds{hostname="%s"} - node_boot_time_seconds{hostname="%s"}) / 60'`                                                                                                           | The PromQL query for fetching uptime metrics, converted to minutes.                       |
-
-Please replace all instances of `"redacted"` with your actual credentials or values. Also, remember to replace `"%s"` placeholders in the Prometheus queries with your actual hostnames.
-## Considerations
-
-### Node Exporter
-
-`mii-lama` leverages [Node Exporter](https://github.com/prometheus/node_exporter), a widely used Prometheus exporter that provides hardware and OS metrics exposed by *NIX kernels. Node Exporter is written in Go and comes with pluggable metric collectors, making it an excellent choice for this purpose. The config bundles queries for CPU, memory, disk and uptime metrics. You can add more queries to the config as per your requirements.
-
-### Specifying Hosts
-
-Currently the LAMA API spec doesn't have the provision to send a `host` identifier. Due to this, only the first host in the configuration is considered. Once the spec is updated to support, this restriction in `mii-lama` will be removed.
+Please refer to [advanced instructions](./docs/usage.md) for advanced usage instructions.
 
 ## Contributing
 
