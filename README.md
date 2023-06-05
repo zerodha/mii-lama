@@ -12,9 +12,7 @@ It involves three components.
 
 - **mii-lama**: The program collects metrics from prometheus DB, converts it to the LAMA API spec, and uploads it to the exchange systems at regular intervals.
 
-![image](https://github.com/zerodha/mii-lama/assets/547147/7b7c13a6-e7c9-4197-80a7-705639760974)
-
-
+![image](https://github.com/zerodha/mii-lama/assets/5689132/bf4ba171-6b60-4cc4-82bf-3f1a0bc89dc5)
 
 # Installation
 
