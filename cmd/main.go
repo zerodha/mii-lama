@@ -25,21 +25,30 @@ func main() {
 	lo := initLogger(ko.MustString("app.log_level"))
 	lo.Info("booting mii-lama version", "version", buildString)
 
+	// Initialise the metrics manager.
 	metricsMgr, err := initMetricsManager(ko)
 	if err != nil {
 		lo.Error("failed to init metrics manager", "error", err)
 		exit()
 	}
 
-	nseMgr, err := initNSEManager(ko, lo)
-	if err != nil {
-		lo.Error("failed to init nse manager", "error", err)
-		exit()
-	}
-
+	// Load queries for hardware metrics.
 	hardwareSvc, err := inithardwareSvc(ko)
 	if err != nil {
 		lo.Error("failed to init hardware service", "error", err)
+		exit()
+	}
+	// Load queries for database metrics.
+	dbSvc, err := initDBSvc(ko)
+	if err != nil {
+		lo.Error("failed to init db service", "error", err)
+		exit()
+	}
+
+	// Initialise the NSE manager.
+	nseMgr, err := initNSEManager(ko, lo)
+	if err != nil {
+		lo.Error("failed to init nse manager", "error", err)
 		exit()
 	}
 
@@ -50,15 +59,20 @@ func main() {
 		metricsMgr:  metricsMgr,
 		nseMgr:      nseMgr,
 		hardwareSvc: hardwareSvc,
+		dbSvc:       dbSvc,
 	}
 
 	// Create a new context which is cancelled when `SIGINT`/`SIGTERM` is received.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	// Start the worker in background.
+	// Start the workers for fetching different metrics in the background.
 	var wg = &sync.WaitGroup{}
+
 	wg.Add(1)
-	go app.worker(ctx, wg)
+	go app.syncHWMetricsWorker(ctx, wg)
+
+	wg.Add(1)
+	go app.syncDBMetricsWorker(ctx, wg)
 
 	// Listen on the close channel indefinitely until a
 	// `SIGINT` or `SIGTERM` is received.
@@ -72,46 +86,71 @@ func main() {
 	app.lo.Info("shutting down")
 }
 
-func (app *App) worker(ctx context.Context, wg *sync.WaitGroup) {
+func (app *App) syncHWMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	ticker := time.NewTicker(app.opts.SyncInterval)
 	defer ticker.Stop()
 
-	app.lo.Info("starting worker", "interval", app.opts.SyncInterval)
+	app.lo.Info("Starting hardware metrics worker", "interval", app.opts.SyncInterval)
 	for {
 		select {
 		case <-ticker.C:
-			data, err := app.FetchMetrics()
+			data, err := app.fetchHWMetrics()
 			if err != nil {
-				app.lo.Error("failed to fetch metrics", "error", err)
+				app.lo.Error("Failed to fetch HW metrics", "error", err)
 				continue
 			}
 
 			// Push to upstream LAMA APIs.
 			for host, hostData := range data {
-				// Push to upstream LAMA APIs.
-				for i := 0; i < app.opts.MaxRetries; i++ {
-					if err := app.nseMgr.PushHWMetrics(host, hostData); err != nil {
-						app.lo.Error("failed to push hw metrics to nse", "error", err)
-						// Handle retry logic.
-						if i < app.opts.MaxRetries-1 {
-							time.Sleep(app.opts.RetryInterval)
-							app.lo.Info("retrying push to nse", "attempt", i+1)
-							continue
-						}
-						app.lo.Error("failed to push hw metrics to nse", "error", err, "max_retries", app.opts.MaxRetries)
-						continue
-					}
-					break
+				if err := app.pushHWMetrics(host, hostData); err != nil {
+					app.lo.Error("Failed to push HW metrics to NSE", "host", host, "error", err)
+					continue
 				}
+
 				// FIXME: Currently the LAMA API does not support multiple hosts.
 				// Once we've pushed the data for the first host, break the loop.
 				// Once the LAMA API supports multiple hosts, remove this.
 				break
 			}
 		case <-ctx.Done():
-			app.lo.Info("quitting worker")
+			app.lo.Info("Stopping HW metrics worker")
+			return
+		}
+	}
+}
+
+func (app *App) syncDBMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(app.opts.SyncInterval)
+	defer ticker.Stop()
+
+	app.lo.Info("Starting DB metrics worker", "interval", app.opts.SyncInterval)
+	for {
+		select {
+		case <-ticker.C:
+			data, err := app.fetchDBMetrics()
+			if err != nil {
+				app.lo.Error("Failed to fetch DB metrics", "error", err)
+				continue
+			}
+
+			// Push to upstream LAMA APIs.
+			for host, hostData := range data {
+				if err := app.pushDBMetrics(host, hostData); err != nil {
+					app.lo.Error("Failed to push DB metrics to NSE", "host", host, "error", err)
+					continue
+				}
+
+				// FIXME: Currently the LAMA API does not support multiple hosts.
+				// Once we've pushed the data for the first host, break the loop.
+				// Once the LAMA API supports multiple hosts, remove this.
+				break
+			}
+		case <-ctx.Done():
+			app.lo.Info("Stopping DB metrics worker")
 			return
 		}
 	}

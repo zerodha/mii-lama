@@ -47,204 +47,9 @@ type Manager struct {
 	headers http.Header
 
 	token string
-	seqID int
-}
 
-func New(lo *slog.Logger, opts Opts) (*Manager, error) {
-	client := &http.Client{
-		Timeout: opts.Timeout,
-		Transport: &http.Transport{
-			MaxIdleConns:    10,
-			IdleConnTimeout: opts.IdleConnTimeout,
-		},
-	}
-
-	// Add common headers.
-	h := http.Header{}
-	h.Set("Content-Type", "application/json")
-	h.Set("Referer", opts.URL)
-	h.Set("User-Agent", USER_AGENT)
-	if strings.Contains(opts.URL, "uat") {
-		h.Add("Cookie", "test")
-	}
-
-	// Set common fields for logger.
-	lgr := lo.With("login_id", opts.LoginID, "member_id", opts.MemberID, "exchange_id", opts.ExchangeID)
-	lgr.Debug("mii-lama client created")
-
-	mgr := &Manager{
-		opts:    opts,
-		lo:      lgr,
-		client:  client,
-		headers: h,
-		seqID:   1,
-	}
-
-	return mgr, nil
-}
-
-// Login is used to generate a session token for further requests.
-// Token is valid for 24 hours and after that it should be renewed again.
-func (mgr *Manager) Login() error {
-	var (
-		endpoint = fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/auth/login")
-	)
-	mgr.lo.Info("attempting login", "url", endpoint)
-
-	loginPayload := LoginReq{
-		MemberID: mgr.opts.MemberID,
-		LoginID:  mgr.opts.LoginID,
-		Password: mgr.opts.Password,
-	}
-
-	payload, err := json.Marshal(loginPayload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal login payload: %w", err)
-	}
-
-	mgr.lo.Debug("sending login request", "payload", string(payload))
-
-	// Create a new request using http
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
-	// If an error occurred while creating the request, handle it
-	if err != nil {
-		return fmt.Errorf("could not create request: %v", err)
-	}
-
-	// Add headers to the request.
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range mgr.headers {
-		req.Header.Set(k, strings.Join(v, ","))
-	}
-
-	// Send the request via the client
-	resp, err := mgr.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request for login failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check the status code of the response.
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("http request failed with status code: %d", resp.StatusCode)
-	}
-
-	// Decode the response directly into LoginResp struct
-	var r LoginResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return fmt.Errorf("failed to unmarshal login response: %w", err)
-	}
-
-	// Check if login was successful.
-	if r.ResponseCode != NSE_RESP_CODE_SUCCESS {
-		mgr.lo.Error("login failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "login_id", mgr.opts.LoginID, "member_id", mgr.opts.MemberID)
-		return fmt.Errorf("login failed with nse response code: %d", r.ResponseCode)
-	}
-
-	mgr.lo.Debug("login successful", "login_id", mgr.opts.LoginID, "member_id", mgr.opts.MemberID, "token", r.Token)
-
-	// Save token for future use.
-	mgr.Lock()
-	mgr.token = r.Token
-	mgr.Unlock()
-
-	return nil
-}
-
-func (mgr *Manager) PushHWMetrics(host string, data models.HWPromResp) error {
-	var (
-		endpoint = fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/hardware")
-	)
-	// Get token and sequence id.
-	mgr.RLock()
-	token := mgr.token
-	seqID := mgr.seqID
-	mgr.RUnlock()
-
-	hwPayload := createHardwareReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1)
-
-	payload, err := json.Marshal(hwPayload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal hw metrics payload: %w", err)
-	}
-
-	mgr.lo.Info("attempting to send hw metrics", "host", host, "url", endpoint, "payload", string(payload), "headers", mgr.headers)
-
-	// Create a new request.
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
-	// If an error occurred while creating the request, handle it
-	if err != nil {
-		return fmt.Errorf("could not create request: %v", err)
-	}
-
-	// Add headers to the request
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	for k, v := range mgr.headers {
-		req.Header.Set(k, strings.Join(v, ","))
-	}
-
-	// // Dump the request for debugging.
-	// requestDump, err := httputil.DumpRequestOut(req, true)
-	// if err != nil {
-	// 	fmt.Println("Error dumping request:", err)
-	// } else {
-	// 	fmt.Println("Request:", string(requestDump))
-	// }
-
-	// Send the request via the client.
-	resp, err := mgr.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request for hw metrics failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var r MetricsResp
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return fmt.Errorf("failed to unmarshal hw metrics response: %w", err)
-	}
-
-	mgr.lo.Info("metrics push response", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "http_status", resp.StatusCode)
-
-	if resp.StatusCode != http.StatusOK {
-		mgr.lo.Error("metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
-		switch r.ResponseCode {
-		// Handle case where token is invalid.
-		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
-			mgr.lo.Error("token is invalid, attempting to login")
-			if err := mgr.Login(); err != nil {
-				return fmt.Errorf("failed to relogin: %w", err)
-			}
-			// Retry push after login.
-			return fmt.Errorf("new token is set after login, retry again")
-
-		// Handle case where sequence id is invalid.
-		case NSE_RESP_CODE_INVALID_SEQ_ID:
-			mgr.lo.Warn("sequence id is invalid, attempting to update")
-			// Extract expected sequence id from error description.
-			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
-			if err != nil {
-				return fmt.Errorf("failed to extract expected sequence id: %w", err)
-			}
-			mgr.lo.Debug("expected sequence id", "expected_seq_id", expectedSeqID)
-			mgr.Lock()
-			mgr.seqID = expectedSeqID
-			mgr.Unlock()
-			return fmt.Errorf("sequence id is updated, retry again")
-
-		default:
-			return fmt.Errorf("metrics push failed with nse response code: %d", r.ResponseCode)
-		}
-	}
-
-	// Increment sequence id on successful/partial push.
-	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
-		mgr.Lock()
-		mgr.seqID++
-		mgr.Unlock()
-	}
-
-	return nil
+	dbSeqID int
+	hwSeqID int
 }
 
 type LoginReq struct {
@@ -278,13 +83,15 @@ type MetricsResp struct {
 }
 
 type MetricData struct {
-	Key   string `json:"key"`
-	Value struct {
-		Min float64 `json:"min"`
-		Max float64 `json:"max"`
-		Avg float64 `json:"avg"`
-		Med float64 `json:"med"`
-	} `json:"value"`
+	Key   string      `json:"key"`
+	Value interface{} `json:"value"`
+}
+
+type MetricValue struct {
+	Min float64 `json:"min"`
+	Max float64 `json:"max"`
+	Avg float64 `json:"avg"`
+	Med float64 `json:"med"`
 }
 
 type MetricPayload struct {
@@ -300,41 +107,322 @@ type HardwareReq struct {
 	Payload    []MetricPayload `json:"payload"`
 }
 
-// Function to create a new MetricData
-func newMetricData(key string, avg float64) MetricData {
-	var value string
-	switch key {
-	case "uptime":
-		value = fmt.Sprintf("%.0f", avg)
-	default:
-		value = fmt.Sprintf("%.2f", avg)
+type DatabaseReq struct {
+	MemberID   string          `json:"memberId"`
+	ExchangeID int             `json:"exchangeId"`
+	SequenceID int             `json:"sequenceId"`
+	Timestamp  int64           `json:"timestamp"`
+	Payload    []MetricPayload `json:"payload"`
+}
+
+func New(lo *slog.Logger, opts Opts) (*Manager, error) {
+	client := &http.Client{
+		Timeout: opts.Timeout,
+		Transport: &http.Transport{
+			MaxIdleConns:    10,
+			IdleConnTimeout: opts.IdleConnTimeout,
+		},
 	}
 
-	// Convert the string back to a float64.
-	data, err := strconv.ParseFloat(value, 64)
+	// Add common headers.
+	h := http.Header{}
+	h.Set("Content-Type", "application/json")
+	h.Set("Referer", opts.URL)
+	h.Set("User-Agent", USER_AGENT)
+	if strings.Contains(opts.URL, "uat") {
+		h.Add("Cookie", "test")
+	}
+
+	// Set common fields for logger.
+	lgr := lo.With("login_id", opts.LoginID, "member_id", opts.MemberID, "exchange_id", opts.ExchangeID)
+	lgr.Debug("mii-lama client created")
+
+	mgr := &Manager{
+		opts:    opts,
+		lo:      lgr,
+		client:  client,
+		headers: h,
+		hwSeqID: 1,
+		dbSeqID: 1,
+	}
+
+	return mgr, nil
+}
+
+// Login is used to generate a session token for further requests.
+// Token is valid for 24 hours and after that it should be renewed again.
+func (mgr *Manager) Login() error {
+	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/auth/login")
+	mgr.lo.Info("Starting login process", "URL", endpoint)
+
+	loginPayload := LoginReq{
+		MemberID: mgr.opts.MemberID,
+		LoginID:  mgr.opts.LoginID,
+		Password: mgr.opts.Password,
+	}
+
+	payload, err := json.Marshal(loginPayload)
 	if err != nil {
-		// TODO: Handle error. For now fallback to original value.
-		fmt.Println("failed to convert string to float64", "value", value, "error", err, "key", key, "avg", avg)
-		data = avg
+		mgr.lo.Error("Unable to marshal login payload", "error", err)
+		return fmt.Errorf("failed to marshal login payload: %v", err)
 	}
 
-	return MetricData{
-		Key: key,
-		Value: struct {
-			Min float64 `json:"min"`
-			Max float64 `json:"max"`
-			Avg float64 `json:"avg"`
-			Med float64 `json:"med"`
-		}{
+	mgr.lo.Debug("Prepared login request payload", "payload", string(payload))
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
+	if err != nil {
+		mgr.lo.Error("Unable to create HTTP request", "error", err)
+		return fmt.Errorf("failed to create HTTP request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range mgr.headers {
+		req.Header.Set(k, strings.Join(v, ","))
+	}
+
+	resp, err := mgr.client.Do(req)
+	if err != nil {
+		mgr.lo.Error("HTTP request failed", "error", err)
+		return fmt.Errorf("failed to send HTTP request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		mgr.lo.Error("Unexpected HTTP status code", "status_code", resp.StatusCode)
+		return fmt.Errorf("HTTP request returned status code %d", resp.StatusCode)
+	}
+
+	var r LoginResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		mgr.lo.Error("Unable to unmarshal login response", "error", err)
+		return fmt.Errorf("failed to unmarshal login response: %v", err)
+	}
+
+	if r.ResponseCode != NSE_RESP_CODE_SUCCESS {
+		mgr.lo.Error("Login failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "login_id", mgr.opts.LoginID, "member_id", mgr.opts.MemberID)
+		return fmt.Errorf("login failed with NSE response code %d and description: %s", r.ResponseCode, r.ResponseDesc)
+	}
+
+	mgr.lo.Info("Login successful", "login_id", mgr.opts.LoginID, "member_id", mgr.opts.MemberID, "token", r.Token)
+
+	mgr.Lock()
+	mgr.token = r.Token
+	mgr.Unlock()
+
+	return nil
+}
+
+// PushHWMetrics is used to push database metrics to NSE LAMA API.
+func (mgr *Manager) PushHWMetrics(host string, data models.HWPromResp) error {
+	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/hardware")
+
+	mgr.RLock()
+	token := mgr.token
+	seqID := mgr.hwSeqID
+	mgr.RUnlock()
+
+	hwPayload := createHardwareReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1)
+
+	payload, err := json.Marshal(hwPayload)
+	if err != nil {
+		mgr.lo.Error("Failed to marshal hardware metrics payload", "error", err)
+		return fmt.Errorf("failed to marshal hardware metrics payload: %v", err)
+	}
+
+	mgr.lo.Info("Preparing to send hardware metrics", "host", host, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
+	if err != nil {
+		mgr.lo.Error("Failed to create HTTP request", "error", err)
+		return fmt.Errorf("failed to create HTTP request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	for k, v := range mgr.headers {
+		req.Header.Set(k, strings.Join(v, ","))
+	}
+
+	resp, err := mgr.client.Do(req)
+	if err != nil {
+		mgr.lo.Error("Hardware metrics HTTP request failed", "error", err)
+		return fmt.Errorf("hardware metrics HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var r MetricsResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		mgr.lo.Error("Failed to unmarshal hardware metrics response", "error", err)
+		return fmt.Errorf("failed to unmarshal hardware metrics response: %v", err)
+	}
+
+	mgr.lo.Info("Received response for hardware metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		mgr.lo.Error("Hardware metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		switch r.ResponseCode {
+		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
+			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			if err := mgr.Login(); err != nil {
+				mgr.lo.Error("Relogin attempt failed", "error", err)
+				return fmt.Errorf("failed to log in again: %v", err)
+			}
+			return fmt.Errorf("new token obtained after relogin, retrying hardware metrics push")
+
+		case NSE_RESP_CODE_INVALID_SEQ_ID:
+			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
+			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
+			if err != nil {
+				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
+				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
+			}
+			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
+			mgr.Lock()
+			mgr.hwSeqID = expectedSeqID
+			mgr.Unlock()
+			return fmt.Errorf("sequence ID updated, retrying hardware metrics push")
+
+		default:
+			return fmt.Errorf("hardware metrics push failed with NSE response code %d", r.ResponseCode)
+		}
+	}
+
+	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
+		mgr.Lock()
+		mgr.hwSeqID++
+		mgr.Unlock()
+	}
+
+	return nil
+}
+
+// PushDBMetrics sends database metrics to NSE LAMA API.
+func (mgr *Manager) PushDBMetrics(host string, data models.DBPromResp) error {
+	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/database")
+
+	// Acquire read lock to safely read token and sequence ID.
+	mgr.RLock()
+	token := mgr.token
+	seqID := mgr.dbSeqID
+	mgr.RUnlock()
+
+	dbPayload := createDatabaseReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1)
+
+	payload, err := json.Marshal(dbPayload)
+	if err != nil {
+		mgr.lo.Error("Failed to marshal database metrics payload", "error", err)
+		return fmt.Errorf("failed to marshal database metrics payload: %v", err)
+	}
+
+	mgr.lo.Info("Preparing to send database metrics", "host", host, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+
+	// Initialize new HTTP request for metrics push.
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
+	if err != nil {
+		mgr.lo.Error("Failed to create HTTP request", "error", err)
+		return fmt.Errorf("failed to create HTTP request: %v", err)
+	}
+
+	// Set headers for the request.
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	for k, v := range mgr.headers {
+		req.Header.Set(k, strings.Join(v, ","))
+	}
+
+	// Execute HTTP request using the HTTP client.
+	resp, err := mgr.client.Do(req)
+	if err != nil {
+		mgr.lo.Error("Database metrics HTTP request failed", "error", err)
+		return fmt.Errorf("database metrics HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Unmarshal the response into MetricsResp object.
+	var r MetricsResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		mgr.lo.Error("Failed to unmarshal database metrics response", "error", err)
+		return fmt.Errorf("failed to unmarshal database metrics response: %v", err)
+	}
+
+	mgr.lo.Info("Received response for database metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		mgr.lo.Error("Database metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		switch r.ResponseCode {
+		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
+			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			if err := mgr.Login(); err != nil {
+				mgr.lo.Error("Relogin attempt failed", "error", err)
+				return fmt.Errorf("failed to log in again: %v", err)
+			}
+			return fmt.Errorf("new token obtained after relogin, retrying database metrics push")
+
+		case NSE_RESP_CODE_INVALID_SEQ_ID:
+			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
+			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
+			if err != nil {
+				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
+				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
+			}
+			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
+			mgr.Lock()
+			mgr.dbSeqID = expectedSeqID
+			mgr.Unlock()
+			return fmt.Errorf("sequence ID has been updated, retrying database metrics push")
+
+		default:
+			mgr.lo.Error("Database metrics push failed with unhandled response code", "response_code", r.ResponseCode)
+			return fmt.Errorf("database metrics push failed with unhandled response code: %d", r.ResponseCode)
+		}
+	}
+
+	// Increase sequence ID if metrics push was successful or partially successful.
+	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
+		mgr.Lock()
+		mgr.dbSeqID++
+		mgr.Unlock()
+	}
+
+	return nil
+}
+
+// Function to create a new MetricData.
+func newMetricData(key string, avg float64, simple bool) MetricData {
+	var value interface{}
+	if simple {
+		value = avg
+	} else {
+		var strValue string
+		switch key {
+		case "uptime":
+			strValue = fmt.Sprintf("%.0f", avg)
+		default:
+			strValue = fmt.Sprintf("%.2f", avg)
+		}
+
+		// Convert the string back to a float64.
+		data, err := strconv.ParseFloat(strValue, 64)
+		if err != nil {
+			// TODO: Handle error. For now fallback to original value.
+			fmt.Println("failed to convert string to float64", "value", strValue, "error", err, "key", key, "avg", avg)
+			data = avg
+		}
+
+		value = MetricValue{
 			Min: 0,
 			Max: 0,
 			Avg: data,
 			Med: 0,
-		},
+		}
+	}
+
+	return MetricData{
+		Key:   key,
+		Value: value,
 	}
 }
 
-// Function to create a new HardwareReq
 func createHardwareReq(metrics models.HWPromResp, memberId string, exchangeId, sequenceId, applicationId int) HardwareReq {
 	return HardwareReq{
 		MemberID:   memberId,
@@ -345,10 +433,27 @@ func createHardwareReq(metrics models.HWPromResp, memberId string, exchangeId, s
 			{
 				ApplicationID: applicationId,
 				MetricData: []MetricData{
-					newMetricData("cpu", metrics.CPU),
-					newMetricData("memory", metrics.Mem),
-					newMetricData("disk", metrics.Disk),
-					newMetricData("uptime", metrics.Uptime),
+					newMetricData("cpu", metrics.CPU, false),
+					newMetricData("memory", metrics.Mem, false),
+					newMetricData("disk", metrics.Disk, false),
+					newMetricData("uptime", metrics.Uptime, false),
+				},
+			},
+		},
+	}
+}
+
+func createDatabaseReq(metrics models.DBPromResp, memberId string, exchangeId, sequenceId, applicationId int) DatabaseReq {
+	return DatabaseReq{
+		MemberID:   memberId,
+		ExchangeID: exchangeId,
+		SequenceID: sequenceId,
+		Timestamp:  time.Now().Unix(),
+		Payload: []MetricPayload{
+			{
+				ApplicationID: applicationId,
+				MetricData: []MetricData{
+					newMetricData("status", float64(metrics.Status), true),
 				},
 			},
 		},

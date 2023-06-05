@@ -36,6 +36,7 @@ services:
       - prometheus
     volumes:
       - ./mii-lama:/etc/mii-lama
+      - ./prometheus:/etc/prometheus
     command:
       - '--config=/etc/mii-lama/config.toml'
     restart: unless-stopped

@@ -18,6 +18,7 @@ type Opts struct {
 	IdleConnTimeout time.Duration
 	Timeout         time.Duration
 	MaxIdleConns    int
+	DefaultHosts    []string
 }
 
 type Manager struct {
@@ -64,7 +65,7 @@ func (m *Manager) Ping() error {
 	// Create a new request using http
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("could not create request: %v", err)
+		return fmt.Errorf("failed to create new HTTP request: %v", err)
 	}
 
 	// If the username and password are set, add them to the request
@@ -75,13 +76,13 @@ func (m *Manager) Ping() error {
 	// Use the client to send the request
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("error querying tsdb status page: %w", err)
+		return fmt.Errorf("failed to query tsdb status page: %v", err)
 	}
 	defer resp.Body.Close()
 
 	// Check the status code of the response: if it's not 200, return an error
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("non 200 response from tsdb status page: %d", resp.StatusCode)
+		return fmt.Errorf("received non-200 response (%d) from tsdb status page", resp.StatusCode)
 	}
 
 	return nil
@@ -108,49 +109,49 @@ func (m *Manager) Query(query string) (float64, error) {
 
 	req, err := http.NewRequest(http.MethodGet, reqUrl, nil)
 	if err != nil {
-		return 0, fmt.Errorf("could not create request: %v", err)
+		return 0, fmt.Errorf("failed to create new HTTP request: %v", err)
 	}
 
 	req.Header = h
 
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("http request failed: %w", err)
+		return 0, fmt.Errorf("HTTP request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	// Check the status code of the response.
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("http request failed with status code: %d", resp.StatusCode)
+		return 0, fmt.Errorf("HTTP request returned a non-200 status code (%d)", resp.StatusCode)
 	}
 
 	// Unmarshal the JSON response into a PrometheusResponse struct
 	var promResp PrometheusResponse
 	if err = json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
-		return 0, fmt.Errorf("unmarshalling response failed: %w", err)
+		return 0, fmt.Errorf("failed to unmarshal the response body: %v", err)
 	}
 
 	// Check if the response contains any metrics.
 	if len(promResp.Data.Result) == 0 {
-		return 0, fmt.Errorf("no result found in response")
+		return 0, fmt.Errorf("response contains no result data")
 	}
 
 	// Extract the second entry of the "value" field.
 	if len(promResp.Data.Result[0].Value) > 1 {
 		value, ok := promResp.Data.Result[0].Value[1].(string)
 		if !ok {
-			return 0, fmt.Errorf("value is not a string")
+			return 0, fmt.Errorf("value in the response is not a string")
 		}
 
 		// Convert string to float64.
 		floatValue, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			return 0, fmt.Errorf("converting string to float failed: %w", err)
+			return 0, fmt.Errorf("failed to convert response value from string to float64: %v", err)
 		}
 
 		return floatValue, nil
 	} else {
-		return 0, fmt.Errorf("value field not found in response")
+		return 0, fmt.Errorf("response contains no 'value' field")
 	}
 }
 
