@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	"github.com/knadh/koanf/parsers/toml"
+	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/env"
+
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 	flag "github.com/spf13/pflag"
@@ -14,6 +16,19 @@ import (
 	"github.com/zerodha/mii-lama/internal/nse"
 	"golang.org/x/exp/slog"
 )
+
+type PromConfig struct {
+	ScrapeConfigs []PromScrapeConfig `koanf:"scrape_configs"`
+}
+
+type PromScrapeConfig struct {
+	JobName       string             `koanf:"job_name"`
+	StaticConfigs []PromStaticConfig `koanf:"static_configs"`
+}
+
+type PromStaticConfig struct {
+	Targets []string `koanf:"targets"`
+}
 
 // initConfig loads config to `ko`
 // object.
@@ -95,16 +110,66 @@ func initMetricsManager(ko *koanf.Koanf) (*metrics.Manager, error) {
 
 // Load hardware metrics queries and hosts from the configuration
 func inithardwareSvc(ko *koanf.Koanf) (*hardwareService, error) {
-	queries := map[string]string{
-		"cpu":    ko.MustString("metrics.hardware.cpu"),
-		"memory": ko.MustString("metrics.hardware.memory"),
-		"disk":   ko.MustString("metrics.hardware.disk"),
-		"uptime": ko.MustString("metrics.hardware.uptime"),
+	var (
+		queries = map[string]string{
+			"cpu":    ko.MustString("metrics.hardware.cpu"),
+			"memory": ko.MustString("metrics.hardware.memory"),
+			"disk":   ko.MustString("metrics.hardware.disk"),
+			"uptime": ko.MustString("metrics.hardware.uptime"),
+		}
+		hosts   = ko.Strings("metrics.hardware.hosts")
+		cfgPath = ko.String("prometheus.config_path")
+	)
+
+	// If no hosts are provided, try to load from the prometheus config.
+	if len(hosts) == 0 && cfgPath != "" {
+		// Fallback to the default hosts from the config.
+		// Load the config files from the path provided.
+		defaultHosts, err := initDefaultHosts(ko, cfgPath)
+		if err != nil {
+			return nil, err
+		}
+		hosts = defaultHosts
 	}
 
-	hosts := ko.MustStrings("metrics.hardware.hosts")
+	// Validate that hosts are loaded.
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("no hosts found in the config")
+	}
 
 	return &hardwareService{
+		hosts:   hosts,
+		queries: queries,
+	}, nil
+}
+
+// Load hardware metrics queries and hosts from the configuration
+func initDBSvc(ko *koanf.Koanf) (*dbService, error) {
+	var (
+		queries = map[string]string{
+			"status": ko.MustString("metrics.database.status"),
+		}
+		hosts   = ko.Strings("metrics.database.hosts")
+		cfgPath = ko.String("prometheus.config_path")
+	)
+
+	// If no hosts are provided, try to load from the prometheus config.
+	if len(hosts) == 0 && cfgPath != "" {
+		// Fallback to the default hosts from the config.
+		// Load the config files from the path provided.
+		defaultHosts, err := initDefaultHosts(ko, cfgPath)
+		if err != nil {
+			return nil, err
+		}
+		hosts = defaultHosts
+	}
+
+	// Validate that hosts are loaded.
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("no hosts found in the config")
+	}
+
+	return &dbService{
 		hosts:   hosts,
 		queries: queries,
 	}, nil
@@ -138,4 +203,31 @@ func initOpts(ko *koanf.Koanf) Opts {
 		RetryInterval: ko.MustDuration("app.retry_interval"),
 		SyncInterval:  ko.MustDuration("app.sync_interval"),
 	}
+}
+
+func initDefaultHosts(ko *koanf.Koanf, cfgPath string) ([]string, error) {
+	var (
+		promCfg      PromConfig
+		defaultHosts []string
+	)
+
+	// Load the Prometheus config from the path provided for parsing list of default hosts.
+	if err := ko.Load(file.Provider(cfgPath), yaml.Parser()); err != nil {
+		return nil, err
+	}
+
+	if err := ko.Unmarshal("", &promCfg); err != nil {
+		return nil, err
+	}
+
+	for _, scrapeConfig := range promCfg.ScrapeConfigs {
+		// Find the scrape config for the metrics-db job.
+		if scrapeConfig.JobName == "metrics-db" {
+			for _, staticConfig := range scrapeConfig.StaticConfigs {
+				defaultHosts = append(defaultHosts, staticConfig.Targets...)
+			}
+		}
+	}
+
+	return defaultHosts, nil
 }
