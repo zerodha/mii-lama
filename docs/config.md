@@ -1,59 +1,4 @@
-## TOC
-
-- [TOC](#toc)
-- [Installation](#installation)
-- [Configuring endpoints for Prometheus](#configuring-endpoints-for-prometheus)
-- [Configuring endpoints for LAMA API gateway](#configuring-endpoints-for-lama-api-gateway)
-- [Usage](#usage)
-- [Configuration](#configuration)
-- [Considerations](#considerations)
-  - [Node Exporter](#node-exporter)
-  - [Specifying Hosts](#specifying-hosts)
-
-## Installation
-
-- You can grab the latest binaries for Linux, MacOS and Windows from the [Releases](https://github.com/zerodha/mii-lama/releases) section.
-- You can pull docker images using `docker pull ghcr.io/zerodha/mii-lama`
-
-## Configuring endpoints for Prometheus
-
-To use `mii-lama`, you need to have a working instance of a Prometheus-compatible storage system (like Thanos or VictoriaMetrics) and access to a LAMA API Gateway credentials.
-
-All Prometheus-compatible storage systems expose metrics via a [HTTP endpoint](https://prometheus.io/docs/prometheus/latest/querying/api/#instant-queries) (`/api/v1/query`). `mii-lama` uses this endpoint to fetch metrics from the storage system. The endpoint URL and credentials (if any) are specified in the configuration file.
-
-```toml
-[prometheus]
-endpoint = "http://prometheus.broker.internal" # Endpoint for Prometheus API
-username = "redacted" # Optional Basic Auth credentials
-password = "redacted" # Optional Basic Auth credentials
-```
-
-`mii-lama` supports not just Prometheus, but any storage system that is compatible with Prometheus [remote_write](https://prometheus.io/docs/practices/remote_write/) API specification. Some examples of such systems are [Grafana Mimir](https://grafana.com/oss/mimir/) and [VictoriaMetrics](https://victoriametrics.com/).
-
-## Configuring endpoints for LAMA API gateway
-
-
-`mii-lama` uses the LAMA API Gateway to send metrics to the LAMA platform. The API Gateway URL and credentials (if any) are specified in the configuration file.
-
-```toml
-[lama.nse]
-url = "https://lama.nse.internal" # Endpoint for NSE LAMA API Gateway
-login_id = "redacted"
-member_id = "redacted"
-password = "redacted"
-timeout = "30s" # Timeout for HTTP requests
-exchange_id = 1 # 1=National Stock Exchange
-```
-
-## Usage
-
-The utility can be run as a standalone binary. The configuration file is passed to the utility via the `--config` flag.
-
-```bash
-$ mii-lama --config config.toml
-```
-
-## Configuration
+# Configuration
 
 You can configure `mii-lama` by creating a `config.toml` file with the following fields. Please refer to the [example config](./config.sample.toml) for more details.
 
@@ -85,12 +30,51 @@ You can configure `mii-lama` by creating a `config.toml` file with the following
 Please replace all instances of `"redacted"` with your actual credentials or values. Also, remember to replace `"%s"` placeholders in the Prometheus queries with your actual hostnames.
 
 
-## Considerations
+## Configuring Prometheus
 
-### Node Exporter
+The default config file for Prometheus is located at [prometheus.yml](./deploy/prometheus/prometheus.yml). For each host machine, you need to add a section in `scrape_configs`. Here's an example:
 
-`mii-lama` leverages [Node Exporter](https://github.com/prometheus/node_exporter), a widely used Prometheus exporter that provides hardware and OS metrics exposed by *NIX kernels. Node Exporter is written in Go and comes with pluggable metric collectors, making it an excellent choice for this purpose. The config bundles queries for CPU, memory, disk and uptime metrics. You can add more queries to the config as per your requirements.
+```yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
 
-### Specifying Hosts
+scrape_configs:
+  - job_name: "kite-db"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["kite.db.internal:9100"]
+```
 
-Currently the LAMA API spec doesn't have the provision to send a `host` identifier. Due to this, only the first host in the configuration is considered. Once the spec is updated to support, this restriction in `mii-lama` will be removed.
+This config will _pull_ the metrics from the host `kite.db.internal` on port `9100` where `node-exporter` is running.
+
+
+## Configuring endpoints for LAMA API gateway
+
+
+`mii-lama` uses the LAMA API Gateway to send metrics to the LAMA platform. The API Gateway URL and credentials (if any) are specified in the configuration file.
+
+```toml
+[lama.nse]
+url = "https://lama.nse.internal" # Endpoint for NSE LAMA API Gateway
+login_id = "redacted"
+member_id = "redacted"
+password = "redacted"
+timeout = "30s" # Timeout for HTTP requests
+exchange_id = 1 # 1=National Stock Exchange
+```
+
+## Configuring endpoints for Prometheus
+
+To use `mii-lama`, you need to have a working instance of a Prometheus-compatible storage system (like Thanos or VictoriaMetrics) and access to a LAMA API Gateway credentials.
+
+All Prometheus-compatible storage systems expose metrics via a [HTTP endpoint](https://prometheus.io/docs/prometheus/latest/querying/api/#instant-queries) (`/api/v1/query`). `mii-lama` uses this endpoint to fetch metrics from the storage system. The endpoint URL and credentials (if any) are specified in the `config.toml` file.
+
+```toml
+[prometheus]
+endpoint = "http://prometheus.broker.internal" # Endpoint for Prometheus API
+username = "redacted" # Optional Basic Auth credentials
+password = "redacted" # Optional Basic Auth credentials
+```
+
+`mii-lama` supports not just Prometheus, but any storage system that is compatible with Prometheus [remote_write](https://prometheus.io/docs/practices/remote_write/) API specification. Some examples of such systems are [Grafana Mimir](https://grafana.com/oss/mimir/) and [VictoriaMetrics](https://victoriametrics.com/).
