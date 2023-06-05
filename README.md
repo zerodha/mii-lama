@@ -2,156 +2,56 @@
 
 # mii-lama
 
-`mii-lama` is a Golang based utility, developed to bridge the gap between [Prometheus](https://prometheus.io/)-based metrics and the LAMA API Gateway.
+`mii-lama` is a tool that aggregates system metrics (eg: CPU, RAM etc.) from any number of Linux or Windows servers, aggregates them, and posts them to the LAMA (Logging and Monitoring Mechanism) framework operated by Indian stock exchanges.
 
-## Features
+It involves three components.
 
-- Extract metrics from your existing Prometheus-compatible storage solution with the help of pre-defined [PromQL](https://prometheus.io/docs/prometheus/latest/querying/basics/) queries.
-- Convert these extracted metrics into the LAMA spec format, ensuring compatibility with the LAMA API Gateway.
-- Periodically fetch and send these transformed metrics to the LAMA API Gateway via HTTP.
+- **node_exporter**: A lightweight program (part of the popular Prometheus project) that is to installed on all servers from where metrics are to be collected. It exposes the metrics on port `9100`.
 
-## Installation
+- **prometheus**: A timeseries database (DB) that collects and stores the metrics from all node_exporter agents installed on servers. It allows collected metrics and queries to be transformed in any manner.
 
-You can grab the latest binaries for Linux, MacOS and Windows from the [Releases](https://github.com/zerodha/mii-lama/releases) section.
+- **mii-lama**: The program collects metrics from prometheus DB, converts it to the LAMA API spec, and uploads it to the exchange systems at regular intervals.
 
-## Setting Up
-
-### node-exporter
-
-`mii-lama` uses metrics exposed by `node-exporter`. The following steps will help you set up `mii-lama` with `node-exporter` on all the instances that require to be monitored. Follow these steps for installing and running `node-exporter` on each host:
-
-#### Install node-exporter
-
-1. **Download Node Exporter:** Node Exporter can be downloaded from the Prometheus official site. Visit the [Prometheus download page](https://prometheus.io/download/#node_exporter) and download the latest version of Node Exporter compatible with your system.
-
-2. **Extract the downloaded file:** Use tar to extract the downloaded file. For example, if you downloaded the file to your Downloads directory, you can use the following command:
-
-    ```
-    tar -xvf ~/Downloads/node_exporter-*.*-amd64.tar.gz
-    ```
-
-3. **Move the Node Exporter binary:** Move the `node_exporter` binary to a directory on your system path, like `/usr/local/bin`. For example:
-
-    ```
-    mv node_exporter-*.*-amd64/node_exporter /usr/local/bin/
-    ```
-
-4. **Clean up:** After you've moved the binary, you can delete the rest of the extracted contents:
-
-    ```
-    rm -r node_exporter-*.*-amd64
-    ```
-
-#### Running Node Exporter as a service
-
-For production use, it's recommended to run Node Exporter as a system service. If you're using a system with systemd, you can follow these steps to run Node Exporter as a service:
-
-1. **Create a systemd service file for Node Exporter:** Open a new service file for Node Exporter with a command like:
-
-    ```
-    sudo nano /etc/systemd/system/node_exporter.service
-    ```
-
-    Then, add the following contents to the file:
-
-    ```
-    [Unit]
-    Description=Node Exporter
-    Requires=node_exporter.socket
-
-    [Service]
-    User=node_exporter
-    EnvironmentFile=/etc/sysconfig/node_exporter
-    ExecStart=/usr/sbin/node_exporter --web.systemd-socket $OPTIONS
-
-    [Install]
-    WantedBy=multi-user.target
-    ```
-
-    Save and close the file when you're done.
-
-2. **Reload systemd:** After you've created the service file, tell systemd to reload its configuration with:
-
-    ```
-    sudo systemctl daemon-reload
-    ```
-
-3. **Start Node Exporter:** Start the Node Exporter service with:
-
-    ```
-    sudo systemctl start node_exporter
-    ```
-
-4. **Enable Node Exporter on boot:** If you want Node Exporter to start automatically when your system boots, use:
-
-    ```
-    sudo systemctl enable node_exporter
-    ```
-
-You can check the status of the Node Exporter service at any time with the following command:
-
-```
-sudo systemctl status node_exporter
-```
-
-This should show that the service is active (running). This starts Node Exporter on its default port, 9100. You can check if Node Exporter is running by visiting `http://localhost:9100/metrics` in your web browser. This page displays the raw metrics that Node Exporter exposes to Prometheus.
+![image](https://github.com/zerodha/mii-lama/assets/547147/7b7c13a6-e7c9-4197-80a7-705639760974)
 
 
-### Storing Metrics
 
-The metrics exposed by `node-metrics` on all host machines should be centrally shipped and stored on a central metrics timeseries database. `node-exporter` exports metrics in Prometheus format so any Prometheus API compatible storage system will work.
+# Installation
 
-The [docker-compose.yml](./deploy/docker-compose.yml) shows an example of how to spin up a Prometheus server to store metrics.
+## 1. Download programs
+
+- Download the latest release of `node_exporter` ([Linux](https://prometheus.io/download/#node_exporter), [Windows](https://github.com/prometheus-community/windows_exporter/releases)). Extract the binary, copy it to all servers that need to be monitored and leave the binary running on them (Don't forget to open TCP port 9100 on the internal network on the servers).
+
+- Download and install [Docker](https://www.docker.com/get-started/) on the centralised system (master) where `mii-lama` will run.
+
+## 2. Download config files
+- Download [docker-compose.yml](https://github.com/zerodha/mii-lama/blob/main/demo/docker-compose.yml?raw=true) from this repository and save it on the master system. This will run prometheus DB and mii-lama out-of-the box inside a Docker container.
+
+- Download [prometheus.yml](https://raw.githubusercontent.com/zerodha/mii-lama/main/deploy/prometheus/prometheus.yml) configuration file and save it alongside `docker-compose.yml` on the master system.
+
+- Download [config.sample.toml](https://raw.githubusercontent.com/zerodha/mii-lama/main/config.sample.toml) and save it alongside `docker-compose.yml` as `config.toml` on the master system.
 
 
-#### Configuring Prometheus
+## 2. Configure
 
-The default config file for Prometheus is located at [prometheus.yml](./deploy/prometheus/prometheus.yml). For each host machine, you need to add a section in `scrape_configs`. Here's an example:
+- Edit `prometheus.yml` and add the IPs of all the servers on which node_exporter is installed and have to be monitored. Eg: `"192.168.0.1:9100", "192.168.0.2:9100"`
 
-```yml
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+- Edit `config.toml`. Add the exchange API credentials to the `[lama.*]` section and change the rest of the config optionally. See [advanced configuration](./docs/config.md) for more info.
 
-scrape_configs:
-  - job_name: "kite-db"
-    scrape_interval: 5s
-    static_configs:
-      - targets: ["kite.db.internal:9100"]
-```
+## 3. Run
+- Ensure that the `node_exporter` service is running on all the servers to be monitored as a background service (on Linux and Windows). For Windows, see instructions [here](https://github.com/prometheus-community/windows_exporter).
 
-This config will _pull_ the metrics from the host `kite.db.internal` on port `9100` where `node-exporter` is running.
+- On the master system, run `docker-compose up -d` to start the Prometheus DB and mii-lama in the background. Prometheus will start collecting metrics from the node_exporter endpoints configured in `prometheus.yml` and `mii-lama` will query and aggregate metrics from it based on the queries defined in `config.toml` and start posting periodically to the exchange systems.
 
-#### Configuring mii-lama
+To ensure that everything is working correctly, inspect the stdout/logs from the programs with the following commands:
+- `docker-compose logs -f` for all logs.
+- `docker-compose logs -f prometheus` for Prometheus logs.
+- `docker-compose logs -f mii-lama` for mii-lama logs.
 
-`mii-lama` needs a config file to specify which hosts' metrics need to be collected. This can be specified in `metrics.hardware.hosts` section:
 
-```tom
-hosts = ["kite.db.internal:9100"]
-```
+# Advanced
 
-### Running the stack
-
-Once the above configuration is in-place, the following command will spin up Prometheus server and `mii-lama` agent as docker containers. 
-
-```
-cd deploy
-docker-compose up
-```
-
-Monitor the logs of both the services and ensure that the metrics are being collected. To push the metrics to LAMA API gateway, configure the following section with proper credentials:
-
-```toml
-[lama.nse]
-url = "https://lama.nse.internal" # Endpoint for NSE LAMA API Gateway
-login_id = "redacted"
-member_id = "redacted"
-password = "redacted"
-```
-
-## Advanced Instructions
-
-Please refer to [advanced instructions](./docs/usage.md) for advanced usage instructions.
+Please refer to [advanced instructions](./docs/advanced.md) for advanced usage instructions.
 
 ## Contributing
 
