@@ -8,10 +8,8 @@ builds:
     goos:
       - linux
       - windows
-      - darwin
     goarch:
       - amd64
-      - arm64
     ldflags:
       - -s -w -X "main.buildString={{ .Tag }} ({{ .ShortCommit }} {{ .Date }})"
     dir: ./cmd/
@@ -29,6 +27,7 @@ archives:
     format_overrides:
       - goos: windows
         format: zip
+
 checksum:
   name_template: "checksums.txt"
 snapshot:
@@ -41,7 +40,7 @@ changelog:
       - "^test:"
 
 dockers:
-  - image_templates: ["ghcr.io/zerodha/mii-lama:{{ .Tag }}-amd64"]
+  - image_templates: ["ghcr.io/zerodha/mii-lama:{{ .Tag }}"]
     goarch: amd64
     dockerfile: Dockerfile
     use: buildx
@@ -54,12 +53,4 @@ dockers:
       - "--platform=linux/amd64"
     extra_files:
       - config.sample.toml
-
-docker_manifests:
-  - name_template: ghcr.io/zerodha/mii-lama:{{ .Tag }}
-    image_templates:
-      - ghcr.io/zerodha/mii-lama:{{ .Tag }}-amd64
-      - ghcr.io/zerodha/mii-lama:{{ .Tag }}-arm64
-  - name_template: ghcr.io/zerodha/mii-lama:latest
-    image_templates:
-      - ghcr.io/zerodha/mii-lama:{{ .Tag }}-amd64
+      - prometheus.sample.yml
