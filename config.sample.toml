@@ -14,14 +14,14 @@ idle_timeout = "5m" # Idle timeout for HTTP requests
 exchange_id = 1 # 1=National Stock Exchange
 
 [prometheus]
-endpoint = "http://prometheus.broker.internal" # Endpoint for Prometheus API
+endpoint = "http://prometheus:9090" # Endpoint for Prometheus API
 query_path = "/api/v1/query" # Endpoint for Prometheus query API
 username = "redacted" # HTTP Basic Auth username
 password = "redacted" # HTTP Basic Auth password
 timeout = "10s" # Timeout for HTTP requests
 idle_timeout = "5m" # Idle timeout for HTTP requests
 max_idle_conns = 10
-config_path = "prometheus.yml" # Path to Prometheus config file. This is used to load a list of hosts to fetch metrics for.
+config_path = "/etc/prometheus/prometheus.yml" # Path to Prometheus config file. This is used to load a list of hosts to fetch metrics for.
 
 [metrics.hardware] # Define Prometheus queries for hardware metrics
 hosts = [] # List of hosts to fetch metrics for. Keep this empty to fetch metrics for all hosts defined in `prometheus.config_path` file.

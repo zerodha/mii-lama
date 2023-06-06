@@ -23,12 +23,11 @@ It involves three components.
 - Download and install [Docker](https://www.docker.com/get-started/) on the centralised system (master) where `mii-lama` will run.
 
 ## 2. Download config files
-- Download [docker-compose.yml](https://raw.githubusercontent.com/zerodha/mii-lama/main/deploy/docker-compose.yml) from this repository and save it on the master system. This will run prometheus DB and mii-lama out-of-the box inside a Docker container.
+- Download [docker-compose.yml](./docker-compose.yml) from this repository and save it on the master system. This will run prometheus DB and mii-lama out-of-the box inside a Docker container.
 
-- Download [prometheus.yml](https://raw.githubusercontent.com/zerodha/mii-lama/main/deploy/prometheus/prometheus.yml) configuration file and save it alongside `docker-compose.yml` on the master system.
+- Download [prometheus.yml](./prometheus.sample.yml) configuration file and save it alongside `docker-compose.yml` on the master system.
 
-- Download [config.sample.toml](https://raw.githubusercontent.com/zerodha/mii-lama/main/config.sample.toml) and save it alongside `docker-compose.yml` as `config.toml` on the master system.
-
+- Download [config.sample.toml](./config.sample.toml) and save it alongside `docker-compose.yml` as `config.toml` on the master system.
 
 ## 2. Configure
 

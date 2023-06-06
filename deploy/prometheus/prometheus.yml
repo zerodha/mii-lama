@@ -1,9 +1,0 @@
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-
-scrape_configs:
-  - job_name: "metrics-db"
-    static_configs:
-      # Replace these IP addresses with your server's IP address where node exporter is running.
-      - targets: ["10.25.33.47:9100", "192.168.1.4:9100", "172.20.10.10:9100"]
