@@ -4,6 +4,7 @@ before:
 builds:
   - env:
       - CGO_ENABLED=0
+    binary: mii-lama.bin
     goos:
       - linux
       - windows
@@ -21,7 +22,8 @@ archives:
     files:
       - README.md
       - LICENSE
-      - config.sample.hcl
+      - config.sample.toml
+      - prometheus.sample.yml
 
     # use zip for windows archives
     format_overrides:

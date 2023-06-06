@@ -30,7 +30,7 @@ services:
       - monitor-net
 
   mii-lama:
-    image: ghcr.io/zerodha/mii-lama:latest
+    image: ghcr.io/zerodha/mii-lama:v0.0.0-amd64
     container_name: mii-lama
     depends_on:
       - prometheus
