@@ -4,13 +4,13 @@ sync_interval = "5m" # Interval at which the app should fetch data from metrics 
 retry_interval = "5s" # Interval at which the app should retry if the previous request failed.
 max_retries = 3 # Maximum number of retries for a failed request.
 
-
 [lama.nse]
 url = "https://lama.nse.internal" # Endpoint for NSE LAMA API Gateway
 login_id = "redacted"
 member_id = "redacted"
 password = "redacted"
 timeout = "30s" # Timeout for HTTP requests
+idle_timeout = "5m" # Idle timeout for HTTP requests
 exchange_id = 1 # 1=National Stock Exchange
 
 [prometheus]
@@ -19,6 +19,7 @@ query_path = "/api/v1/query" # Endpoint for Prometheus query API
 username = "redacted" # HTTP Basic Auth username
 password = "redacted" # HTTP Basic Auth password
 timeout = "10s" # Timeout for HTTP requests
+idle_timeout = "5m" # Idle timeout for HTTP requests
 max_idle_conns = 10
 config_path = "prometheus.yml" # Path to Prometheus config file. This is used to load a list of hosts to fetch metrics for.
 
