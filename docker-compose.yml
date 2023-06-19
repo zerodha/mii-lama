@@ -35,7 +35,7 @@ services:
     depends_on:
       - prometheus
     volumes:
-      - ./config.sample.toml:/etc/mii-lama/config.toml:ro
+      - ./config.toml:/etc/mii-lama/config.toml:ro
       - ./prometheus.sample.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - '--config=/etc/mii-lama/config.toml'
