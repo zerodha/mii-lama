@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	USER_AGENT                    = "mii-lama"
+	USER_AGENT                    = "LAMAAPI/1.0.0"
 	NSE_RESP_CODE_SUCCESS         = 601
 	NSE_RESP_CODE_PARTIAL_SUCCESS = 602
 	NSE_RESP_CODE_INVALID_LOGIN   = 701
@@ -129,8 +129,11 @@ func New(lo *slog.Logger, opts Opts) (*Manager, error) {
 	h.Set("Content-Type", "application/json")
 	h.Set("Referer", opts.URL)
 	h.Set("User-Agent", USER_AGENT)
+	h.Set("Accept-Language", "en-US")
 	if strings.Contains(opts.URL, "uat") {
 		h.Add("Cookie", "test")
+	} else {
+		h.Add("Cookie", "prod")
 	}
 
 	// Set common fields for logger.
