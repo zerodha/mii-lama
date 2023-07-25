@@ -48,8 +48,9 @@ type Manager struct {
 
 	token string
 
-	dbSeqID int
-	hwSeqID int
+	dbSeqID  int
+	hwSeqID  int
+	netSeqID int
 }
 
 type LoginReq struct {
@@ -115,6 +116,14 @@ type DatabaseReq struct {
 	Payload    []MetricPayload `json:"payload"`
 }
 
+type NetworkReq struct {
+	MemberID   string          `json:"memberId"`
+	ExchangeID int             `json:"exchangeId"`
+	SequenceID int             `json:"sequenceId"`
+	Timestamp  int64           `json:"timestamp"`
+	Payload    []MetricPayload `json:"payload"`
+}
+
 func New(lo *slog.Logger, opts Opts) (*Manager, error) {
 	client := &http.Client{
 		Timeout: opts.Timeout,
@@ -141,12 +150,13 @@ func New(lo *slog.Logger, opts Opts) (*Manager, error) {
 	lgr.Debug("mii-lama client created")
 
 	mgr := &Manager{
-		opts:    opts,
-		lo:      lgr,
-		client:  client,
-		headers: h,
-		hwSeqID: 1,
-		dbSeqID: 1,
+		opts:     opts,
+		lo:       lgr,
+		client:   client,
+		headers:  h,
+		hwSeqID:  1,
+		dbSeqID:  1,
+		netSeqID: 1,
 	}
 
 	return mgr, nil
@@ -423,6 +433,114 @@ func newMetricData(key string, avg float64, simple bool) MetricData {
 	return MetricData{
 		Key:   key,
 		Value: value,
+	}
+}
+
+// PushNetworkMetrics sends network metrics to NSE LAMA API.
+func (mgr *Manager) PushNetworkMetrics(host string, data models.NetworkPromResp) error {
+	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/network")
+
+	// Acquire read lock to safely read token and sequence ID.
+	mgr.RLock()
+	token := mgr.token
+	seqID := mgr.netSeqID
+	mgr.RUnlock()
+
+	netPayload := createNetworkReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1)
+
+	payload, err := json.Marshal(netPayload)
+	if err != nil {
+		mgr.lo.Error("Failed to marshal network metrics payload", "error", err)
+		return fmt.Errorf("failed to marshal network metrics payload: %v", err)
+	}
+
+	mgr.lo.Info("Preparing to send network metrics", "host", host, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+
+	// Initialize new HTTP request for metrics push.
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
+	if err != nil {
+		mgr.lo.Error("Failed to create HTTP request", "error", err)
+		return fmt.Errorf("failed to create HTTP request: %v", err)
+	}
+
+	// Set headers for the request.
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	for k, v := range mgr.headers {
+		req.Header.Set(k, strings.Join(v, ","))
+	}
+
+	// Execute HTTP request using the HTTP client.
+	resp, err := mgr.client.Do(req)
+	if err != nil {
+		mgr.lo.Error("Network metrics HTTP request failed", "error", err)
+		return fmt.Errorf("network metrics HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Unmarshal the response into MetricsResp object.
+	var r MetricsResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		mgr.lo.Error("Failed to unmarshal network metrics response", "error", err)
+		return fmt.Errorf("failed to unmarshal network metrics response: %v", err)
+	}
+
+	mgr.lo.Info("Received response for network metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		mgr.lo.Error("Network metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		switch r.ResponseCode {
+		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
+			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			if err := mgr.Login(); err != nil {
+				mgr.lo.Error("Relogin attempt failed", "error", err)
+				return fmt.Errorf("failed to log in again: %v", err)
+			}
+			return fmt.Errorf("new token obtained after relogin, retrying network metrics push")
+
+		case NSE_RESP_CODE_INVALID_SEQ_ID:
+			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
+			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
+			if err != nil {
+				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
+				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
+			}
+			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
+			mgr.Lock()
+			mgr.netSeqID = expectedSeqID
+			mgr.Unlock()
+			return fmt.Errorf("sequence ID has been updated, retrying network metrics push")
+
+		default:
+			mgr.lo.Error("Network metrics push failed with unhandled response code", "response_code", r.ResponseCode)
+			return fmt.Errorf("network metrics push failed with unhandled response code: %d", r.ResponseCode)
+		}
+	}
+
+	// Increase sequence ID if metrics push was successful or partially successful.
+	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
+		mgr.Lock()
+		mgr.netSeqID++
+		mgr.Unlock()
+	}
+
+	return nil
+}
+
+func createNetworkReq(metrics models.NetworkPromResp, memberId string, exchangeId, sequenceId, applicationId int) NetworkReq {
+	return NetworkReq{
+		MemberID:   memberId,
+		ExchangeID: exchangeId,
+		SequenceID: sequenceId,
+		Timestamp:  time.Now().Unix(),
+		Payload: []MetricPayload{
+			{
+				ApplicationID: applicationId,
+				MetricData: []MetricData{
+					newMetricData("packetCount", float64(metrics.PacketErrors), true),
+				},
+			},
+		},
 	}
 }
 

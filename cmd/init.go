@@ -112,10 +112,11 @@ func initMetricsManager(ko *koanf.Koanf) (*metrics.Manager, error) {
 func inithardwareSvc(ko *koanf.Koanf) (*hardwareService, error) {
 	var (
 		queries = map[string]string{
-			"cpu":    ko.MustString("metrics.hardware.cpu"),
-			"memory": ko.MustString("metrics.hardware.memory"),
-			"disk":   ko.MustString("metrics.hardware.disk"),
-			"uptime": ko.MustString("metrics.hardware.uptime"),
+			"cpu":                 ko.MustString("metrics.hardware.cpu"),
+			"memory":              ko.MustString("metrics.hardware.memory"),
+			"disk":                ko.MustString("metrics.hardware.disk"),
+			"uptime":              ko.MustString("metrics.hardware.uptime"),
+			"network_packet_erro": ko.MustString("metrics.hardware.uptime"),
 		}
 		hosts   = ko.Strings("metrics.hardware.hosts")
 		cfgPath = ko.String("prometheus.config_path")
@@ -170,6 +171,38 @@ func initDBSvc(ko *koanf.Koanf) (*dbService, error) {
 	}
 
 	return &dbService{
+		hosts:   hosts,
+		queries: queries,
+	}, nil
+}
+
+// Load network metrics queries and hosts from the configuration
+func initNetworkSvc(ko *koanf.Koanf) (*networkService, error) {
+	var (
+		queries = map[string]string{
+			"packet_errors": ko.MustString("metrics.network.packet_errors"),
+		}
+		hosts   = ko.Strings("metrics.network.hosts")
+		cfgPath = ko.String("prometheus.config_path")
+	)
+
+	// If no hosts are provided, try to load from the prometheus config.
+	if len(hosts) == 0 && cfgPath != "" {
+		// Fallback to the default hosts from the config.
+		// Load the config files from the path provided.
+		defaultHosts, err := initDefaultHosts(ko, cfgPath)
+		if err != nil {
+			return nil, err
+		}
+		hosts = defaultHosts
+	}
+
+	// Validate that hosts are loaded.
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("no hosts found in the config")
+	}
+
+	return &networkService{
 		hosts:   hosts,
 		queries: queries,
 	}, nil

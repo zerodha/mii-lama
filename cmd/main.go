@@ -45,6 +45,13 @@ func main() {
 		exit()
 	}
 
+	// Load queries for network metrics.
+	networkSvc, err := initNetworkSvc(ko)
+	if err != nil {
+		lo.Error("failed to init network service", "error", err)
+		exit()
+	}
+
 	// Initialise the NSE manager.
 	nseMgr, err := initNSEManager(ko, lo)
 	if err != nil {
@@ -60,6 +67,7 @@ func main() {
 		nseMgr:      nseMgr,
 		hardwareSvc: hardwareSvc,
 		dbSvc:       dbSvc,
+		networkSvc:  networkSvc,
 	}
 
 	// Create a new context which is cancelled when `SIGINT`/`SIGTERM` is received.
@@ -73,6 +81,9 @@ func main() {
 
 	wg.Add(1)
 	go app.syncDBMetricsWorker(ctx, wg)
+
+	wg.Add(1)
+	go app.syncNetworkMetricsWorker(ctx, wg)
 
 	// Listen on the close channel indefinitely until a
 	// `SIGINT` or `SIGTERM` is received.
@@ -151,6 +162,41 @@ func (app *App) syncDBMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
 			}
 		case <-ctx.Done():
 			app.lo.Info("Stopping DB metrics worker")
+			return
+		}
+	}
+}
+
+func (app *App) syncNetworkMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(app.opts.SyncInterval)
+	defer ticker.Stop()
+
+	app.lo.Info("Starting network metrics worker", "interval", app.opts.SyncInterval)
+	for {
+		select {
+		case <-ticker.C:
+			data, err := app.fetchNetworkMetrics()
+			if err != nil {
+				app.lo.Error("Failed to fetch network metrics", "error", err)
+				continue
+			}
+
+			// Push to upstream LAMA APIs.
+			for host, hostData := range data {
+				if err := app.pushNetworkMetrics(host, hostData); err != nil {
+					app.lo.Error("Failed to push network metrics to NSE", "host", host, "error", err)
+					continue
+				}
+
+				// FIXME: Currently the LAMA API does not support multiple hosts.
+				// Once we've pushed the data for the first host, break the loop.
+				// Once the LAMA API supports multiple hosts, remove this.
+				break
+			}
+		case <-ctx.Done():
+			app.lo.Info("Stopping network metrics worker")
 			return
 		}
 	}

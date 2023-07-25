@@ -12,3 +12,8 @@ type HWPromResp struct {
 type DBPromResp struct {
 	Status float64 `json:"status"`
 }
+
+// NetworkPromResp is the response from the Prometheus HTTP API for network metrics.
+type NetworkPromResp struct {
+	PacketErrors float64 `json:"packet_errors"`
+}

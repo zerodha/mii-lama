@@ -1,35 +1,40 @@
 [app]
-log_level = "debug" # To enable debug logging, level should be `debug`.
-sync_interval = "5m" # Interval at which the app should fetch data from metrics store.
+log_level = "debug"   # To enable debug logging, level should be `debug`.
+sync_interval = "5m"  # Interval at which the app should fetch data from metrics store.
 retry_interval = "5s" # Interval at which the app should retry if the previous request failed.
-max_retries = 3 # Maximum number of retries for a failed request.
+max_retries = 3       # Maximum number of retries for a failed request.
 
 [lama.nse]
 url = "https://lama.nse.internal" # Endpoint for NSE LAMA API Gateway
 login_id = "redacted"
 member_id = "redacted"
 password = "redacted"
-timeout = "30s" # Timeout for HTTP requests
-idle_timeout = "5m" # Idle timeout for HTTP requests
-exchange_id = 1 # 1=National Stock Exchange
+timeout = "30s"                   # Timeout for HTTP requests
+idle_timeout = "5m"               # Idle timeout for HTTP requests
+exchange_id = 1                   # 1=National Stock Exchange
 
 [prometheus]
-endpoint = "http://prometheus:9090" # Endpoint for Prometheus API
-query_path = "/api/v1/query" # Endpoint for Prometheus query API
-username = "redacted" # HTTP Basic Auth username
-password = "redacted" # HTTP Basic Auth password
-timeout = "10s" # Timeout for HTTP requests
-idle_timeout = "5m" # Idle timeout for HTTP requests
+endpoint = "http://prometheus:9090"            # Endpoint for Prometheus API
+query_path = "/api/v1/query"                   # Endpoint for Prometheus query API
+username = "redacted"                          # HTTP Basic Auth username
+password = "redacted"                          # HTTP Basic Auth password
+timeout = "10s"                                # Timeout for HTTP requests
+idle_timeout = "5m"                            # Idle timeout for HTTP requests
 max_idle_conns = 10
 config_path = "/etc/prometheus/prometheus.yml" # Path to Prometheus config file. This is used to load a list of hosts to fetch metrics for.
 
 [metrics.hardware] # Define Prometheus queries for hardware metrics
-hosts = [] # List of hosts to fetch metrics for. Keep this empty to fetch metrics for all hosts defined in `prometheus.config_path` file.
+# List of hosts to fetch metrics for. Keep this empty to fetch metrics for all hosts defined in `prometheus.config_path` file.
+hosts = []
 cpu = '100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle", hostname="%s"}[5m])))'
 memory = '(1 - ((node_memory_MemFree_bytes{hostname="%s"} + node_memory_Buffers_bytes{hostname="%s"} + node_memory_Cached_bytes{hostname="%s"}) / node_memory_MemTotal_bytes{hostname="%s"})) * 100'
 disk = '100 - ((node_filesystem_avail_bytes{hostname="%s",device!~"rootfs"} * 100) / node_filesystem_size_bytes{hostname="%s",device!~"rootfs"})'
 uptime = '(node_time_seconds{hostname="%s"} - node_boot_time_seconds{hostname="%s"}) / 60'
 
 [metrics.database] # Define Prometheus queries for db metrics
-hosts = [] # List of hosts to fetch metrics for. Keep this empty to fetch metrics for all hosts defined in `prometheus.config_path` file.
+hosts = []
 status = 'up{hostname="%s"}'
+
+[metrics.network]
+packet_errors = 'sum(rate(node_network_receive_errs_total{hostname="%s"}[5m])) + sum(rate(node_network_transmit_errs_total{hostname="%s"}[5m]))'
+hosts = []
