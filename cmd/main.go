@@ -26,7 +26,7 @@ func main() {
 	lo.Info("booting mii-lama version", "version", buildString)
 
 	// Initialise the metrics manager.
-	metricsMgr, err := initMetricsManager(ko)
+	metricsMgr, err := initMetricsManager(ko,)
 	if err != nil {
 		lo.Error("failed to init metrics manager", "error", err)
 		exit()
