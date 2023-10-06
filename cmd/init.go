@@ -112,11 +112,10 @@ func initMetricsManager(ko *koanf.Koanf) (*metrics.Manager, error) {
 func inithardwareSvc(ko *koanf.Koanf) (*hardwareService, error) {
 	var (
 		queries = map[string]string{
-			"cpu":                 ko.MustString("metrics.hardware.cpu"),
-			"memory":              ko.MustString("metrics.hardware.memory"),
-			"disk":                ko.MustString("metrics.hardware.disk"),
-			"uptime":              ko.MustString("metrics.hardware.uptime"),
-			"network_packet_erro": ko.MustString("metrics.hardware.uptime"),
+			"cpu":    ko.MustString("metrics.hardware.cpu"),
+			"memory": ko.MustString("metrics.hardware.memory"),
+			"disk":   ko.MustString("metrics.hardware.disk"),
+			"uptime": ko.MustString("metrics.hardware.uptime"),
 		}
 		hosts   = ko.Strings("metrics.hardware.hosts")
 		cfgPath = ko.String("prometheus.config_path")
