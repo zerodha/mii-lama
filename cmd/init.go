@@ -207,6 +207,34 @@ func initNetworkSvc(ko *koanf.Koanf) (*networkService, error) {
 	}, nil
 }
 
+func initApplicationSvc(ko *koanf.Koanf) (*applicationService, error) {
+	var (
+		queries = map[string]string{
+			"failure_count": ko.MustString("metrics.application.failure_count"),
+			"throughput":    ko.MustString("metrics.application.throughput"),
+		}
+		hosts   = ko.Strings("metrics.application.hosts")
+		cfgPath = ko.String("prometheus.config_path")
+	)
+
+	if len(hosts) == 0 && cfgPath != "" {
+		defaultHosts, err := initDefaultHosts(ko, cfgPath)
+		if err != nil {
+			return nil, err
+		}
+		hosts = defaultHosts
+	}
+
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("no hosts found in the config")
+	}
+
+	return &applicationService{
+		hosts:   hosts,
+		queries: queries,
+	}, nil
+}
+
 // initNSEManager initialises the NSE manager.
 func initNSEManager(ko *koanf.Koanf, lo *slog.Logger) (*nse.Manager, error) {
 	nseMgr, err := nse.New(lo, nse.Opts{

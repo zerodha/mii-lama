@@ -52,6 +52,13 @@ func main() {
 		exit()
 	}
 
+	// Load queries for application metrics.
+	applicationSvc, err := initApplicationSvc(ko)
+	if err != nil {
+		lo.Error("failed to init application service", "error", err)
+		exit()
+	}
+
 	// Initialise the NSE manager.
 	nseMgr, err := initNSEManager(ko, lo)
 	if err != nil {
@@ -61,13 +68,14 @@ func main() {
 
 	// Init the app.
 	app := &App{
-		lo:          lo,
-		opts:        initOpts(ko),
-		metricsMgr:  metricsMgr,
-		nseMgr:      nseMgr,
-		hardwareSvc: hardwareSvc,
-		dbSvc:       dbSvc,
-		networkSvc:  networkSvc,
+		lo:             lo,
+		opts:           initOpts(ko),
+		metricsMgr:     metricsMgr,
+		nseMgr:         nseMgr,
+		hardwareSvc:    hardwareSvc,
+		dbSvc:          dbSvc,
+		networkSvc:     networkSvc,
+		applicationSvc: applicationSvc,
 	}
 
 	// Create a new context which is cancelled when `SIGINT`/`SIGTERM` is received.
@@ -84,6 +92,9 @@ func main() {
 
 	wg.Add(1)
 	go app.syncNetworkMetricsWorker(ctx, wg)
+
+	wg.Add(1)
+	go app.syncApplicationMetricsWorker(ctx, wg)
 
 	// Listen on the close channel indefinitely until a
 	// `SIGINT` or `SIGTERM` is received.
@@ -197,6 +208,42 @@ func (app *App) syncNetworkMetricsWorker(ctx context.Context, wg *sync.WaitGroup
 			}
 		case <-ctx.Done():
 			app.lo.Info("Stopping network metrics worker")
+			return
+		}
+	}
+}
+
+// Add a new worker function for the application service.
+func (app *App) syncApplicationMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(app.opts.SyncInterval)
+	defer ticker.Stop()
+
+	app.lo.Info("Starting application metrics worker", "interval", app.opts.SyncInterval)
+	for {
+		select {
+		case <-ticker.C:
+			data, err := app.fetchApplicationMetrics()
+			if err != nil {
+				app.lo.Error("Failed to fetch application metrics", "error", err)
+				continue
+			}
+
+			// Push to upstream LAMA APIs.
+			for host, hostData := range data {
+				if err := app.pushApplicationMetrics(host, hostData); err != nil {
+					app.lo.Error("Failed to push application metrics to NSE", "host", host, "error", err)
+					continue
+				}
+
+				// FIXME: Currently the LAMA API does not support multiple hosts.
+				// Once we've pushed the data for the first host, break the loop.
+				// Once the LAMA API supports multiple hosts, remove this.
+				break
+			}
+		case <-ctx.Done():
+			app.lo.Info("Stopping application metrics worker")
 			return
 		}
 	}
