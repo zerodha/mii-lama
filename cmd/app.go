@@ -29,31 +29,32 @@ type Opts struct {
 	SyncInterval  time.Duration
 }
 
+type HostConfig map[int]string
+
 type hardwareService struct {
-	hosts   []string
+	hosts   HostConfig
 	queries map[string]string
 }
 
 type dbService struct {
-	hosts   []string
+	hosts   HostConfig
 	queries map[string]string
 }
 
 type networkService struct {
-	hosts   []string
+	hosts   HostConfig
 	queries map[string]string
 }
 
 type applicationService struct {
-	hosts   []string
+	hosts   HostConfig
 	queries map[string]string
 }
 
-// fetchHWMetrics fetches hardware metrics from the Prometheus HTTP API.
-func (app *App) fetchHWMetrics() (map[string]models.HWPromResp, error) {
-	hwMetrics := make(map[string]models.HWPromResp)
+func (app *App) fetchHWMetrics() (map[int]models.HWPromResp, error) {
+	hwMetrics := make(map[int]models.HWPromResp)
 
-	for _, host := range app.hardwareSvc.hosts {
+	for locationID, host := range app.hardwareSvc.hosts {
 		hwMetricsResp := models.HWPromResp{}
 		for metric, query := range app.hardwareSvc.queries {
 			switch metric {
@@ -108,20 +109,17 @@ func (app *App) fetchHWMetrics() (map[string]models.HWPromResp, error) {
 			}
 		}
 
-		// Add host metrics to the map.
-		hwMetrics[host] = hwMetricsResp
-		app.lo.Debug("fetched metrics", "host", host, "data", hwMetricsResp)
+		hwMetrics[locationID] = hwMetricsResp
+		app.lo.Debug("fetched metrics", "host", host, "locationID", locationID, "data", hwMetricsResp)
 	}
 
 	return hwMetrics, nil
 }
 
-// fetchDBMetrics fetches database metrics from the Prometheus HTTP API.
-func (app *App) fetchDBMetrics() (map[string]models.DBPromResp, error) {
-	dbMetrics := make(map[string]models.DBPromResp)
+func (app *App) fetchDBMetrics() (map[int]models.DBPromResp, error) {
+	dbMetrics := make(map[int]models.DBPromResp)
 
-	// Query database metrics.
-	for _, host := range app.dbSvc.hosts {
+	for locationID, host := range app.dbSvc.hosts {
 		dbMetricsResp := models.DBPromResp{}
 		for metric, query := range app.dbSvc.queries {
 			switch metric {
@@ -143,18 +141,16 @@ func (app *App) fetchDBMetrics() (map[string]models.DBPromResp, error) {
 			}
 		}
 
-		// Add host metrics to the map.
-		dbMetrics[host] = dbMetricsResp
-		app.lo.Debug("fetched metrics", "host", host, "data", dbMetricsResp)
+		dbMetrics[locationID] = dbMetricsResp
+		app.lo.Debug("fetched metrics", "host", host, "locationID", locationID, "data", dbMetricsResp)
 	}
 	return dbMetrics, nil
 }
 
-// fetchNetworkMetrics fetches network metrics from the Prometheus HTTP API.
-func (app *App) fetchNetworkMetrics() (map[string]models.NetworkPromResp, error) {
-	networkMetrics := make(map[string]models.NetworkPromResp)
+func (app *App) fetchNetworkMetrics() (map[int]models.NetworkPromResp, error) {
+	networkMetrics := make(map[int]models.NetworkPromResp)
 
-	for _, host := range app.networkSvc.hosts {
+	for locationID, host := range app.networkSvc.hosts {
 		networkMetricsResp := models.NetworkPromResp{}
 		for metric, query := range app.networkSvc.queries {
 			switch metric {
@@ -176,24 +172,21 @@ func (app *App) fetchNetworkMetrics() (map[string]models.NetworkPromResp, error)
 			}
 		}
 
-		// Add host metrics to the map.
-		networkMetrics[host] = networkMetricsResp
-		app.lo.Debug("fetched metrics", "host", host, "data", networkMetricsResp)
+		networkMetrics[locationID] = networkMetricsResp
+		app.lo.Debug("fetched metrics", "host", host, "locationID", locationID, "data", networkMetricsResp)
 	}
 
 	return networkMetrics, nil
 }
 
-// fetchApplicationMetrics fetches application metrics from the Prometheus HTTP API.
-func (app *App) fetchApplicationMetrics() (map[string]models.AppPromResp, error) {
-	appMetrics := make(map[string]models.AppPromResp)
+func (app *App) fetchApplicationMetrics() (map[int]models.AppPromResp, error) {
+	appMetrics := make(map[int]models.AppPromResp)
 
-	for _, host := range app.applicationSvc.hosts {
+	for locationID, host := range app.applicationSvc.hosts {
 		appMetricsResp := models.AppPromResp{}
 		for metric, query := range app.applicationSvc.queries {
 			switch metric {
 			case "throughput":
-				// NOTE: The query doesn't have a host parameter as it aggregates across all hosts.
 				value, err := app.metricsMgr.Query(query)
 				if err != nil {
 					app.lo.Error("Failed to query Prometheus",
@@ -205,7 +198,6 @@ func (app *App) fetchApplicationMetrics() (map[string]models.AppPromResp, error)
 				appMetricsResp.Throughput = value
 
 			case "failure_count":
-				// NOTE: The query doesn't have a host parameter as it aggregates across all hosts.
 				value, err := app.metricsMgr.Query(query)
 				if err != nil {
 					app.lo.Error("Failed to query Prometheus",
@@ -223,22 +215,20 @@ func (app *App) fetchApplicationMetrics() (map[string]models.AppPromResp, error)
 			}
 		}
 
-		// Add host metrics to the map.
-		appMetrics[host] = appMetricsResp
-		app.lo.Debug("fetched metrics", "host", host, "data", appMetricsResp)
+		appMetrics[locationID] = appMetricsResp
+		app.lo.Debug("fetched metrics", "host", host, "locationID", locationID, "data", appMetricsResp)
 	}
 
 	return appMetrics, nil
 }
 
-// pushHWMetrics pushes hardware metrics to the NSE.
-func (app *App) pushHWMetrics(host string, data models.HWPromResp) error {
+func (app *App) pushHWMetrics(locationID int, host string, data models.HWPromResp) error {
 	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushHWMetrics(host, data); err != nil {
-			// Handle retry logic.
+		if err := app.nseMgr.PushHWMetrics(locationID, host, data); err != nil {
 			if i < app.opts.MaxRetries-1 {
 				app.lo.Error("Failed to push hardware metrics to NSE. Retrying...",
 					"host", host,
+					"locationID", locationID,
 					"attempt", i+1,
 					"error", err)
 				time.Sleep(app.opts.RetryInterval)
@@ -246,6 +236,7 @@ func (app *App) pushHWMetrics(host string, data models.HWPromResp) error {
 			}
 			app.lo.Error("Failed to push hardware metrics to NSE after max retries",
 				"host", host,
+				"locationID", locationID,
 				"max_retries", app.opts.MaxRetries,
 				"error", err)
 			return err
@@ -255,14 +246,13 @@ func (app *App) pushHWMetrics(host string, data models.HWPromResp) error {
 	return nil
 }
 
-// pushDBMetrics pushes hardware metrics to the NSE.
-func (app *App) pushDBMetrics(host string, data models.DBPromResp) error {
+func (app *App) pushDBMetrics(locationID int, host string, data models.DBPromResp) error {
 	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushDBMetrics(host, data); err != nil {
-			// Handle retry logic.
+		if err := app.nseMgr.PushDBMetrics(locationID, host, data); err != nil {
 			if i < app.opts.MaxRetries-1 {
 				app.lo.Error("Failed to push database metrics to NSE. Retrying...",
 					"host", host,
+					"locationID", locationID,
 					"attempt", i+1,
 					"error", err)
 				time.Sleep(app.opts.RetryInterval)
@@ -270,6 +260,7 @@ func (app *App) pushDBMetrics(host string, data models.DBPromResp) error {
 			}
 			app.lo.Error("Failed to push database metrics to NSE after max retries",
 				"host", host,
+				"locationID", locationID,
 				"max_retries", app.opts.MaxRetries,
 				"error", err)
 			return err
@@ -279,14 +270,13 @@ func (app *App) pushDBMetrics(host string, data models.DBPromResp) error {
 	return nil
 }
 
-// pushNetworkMetrics pushes network metrics to the NSE.
-func (app *App) pushNetworkMetrics(host string, data models.NetworkPromResp) error {
+func (app *App) pushNetworkMetrics(locationID int, host string, data models.NetworkPromResp) error {
 	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushNetworkMetrics(host, data); err != nil {
-			// Handle retry logic.
+		if err := app.nseMgr.PushNetworkMetrics(locationID, host, data); err != nil {
 			if i < app.opts.MaxRetries-1 {
 				app.lo.Error("Failed to push network metrics to NSE. Retrying...",
 					"host", host,
+					"locationID", locationID,
 					"attempt", i+1,
 					"error", err)
 				time.Sleep(app.opts.RetryInterval)
@@ -294,6 +284,7 @@ func (app *App) pushNetworkMetrics(host string, data models.NetworkPromResp) err
 			}
 			app.lo.Error("Failed to push network metrics to NSE after max retries",
 				"host", host,
+				"locationID", locationID,
 				"max_retries", app.opts.MaxRetries,
 				"error", err)
 			return err
@@ -303,12 +294,13 @@ func (app *App) pushNetworkMetrics(host string, data models.NetworkPromResp) err
 	return nil
 }
 
-func (app *App) pushApplicationMetrics(host string, data models.AppPromResp) error {
+func (app *App) pushApplicationMetrics(locationID int, host string, data models.AppPromResp) error {
 	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushAppMetrics(host, data); err != nil {
+		if err := app.nseMgr.PushAppMetrics(locationID, host, data); err != nil {
 			if i < app.opts.MaxRetries-1 {
 				app.lo.Error("Failed to push application metrics to NSE. Retrying...",
 					"host", host,
+					"locationID", locationID,
 					"attempt", i+1,
 					"error", err)
 				time.Sleep(app.opts.RetryInterval)
@@ -316,6 +308,7 @@ func (app *App) pushApplicationMetrics(host string, data models.AppPromResp) err
 			}
 			app.lo.Error("Failed to push application metrics to NSE after max retries",
 				"host", host,
+				"locationID", locationID,
 				"max_retries", app.opts.MaxRetries,
 				"error", err)
 			return err

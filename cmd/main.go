@@ -84,17 +84,17 @@ func main() {
 	// Start the workers for fetching different metrics in the background.
 	var wg = &sync.WaitGroup{}
 
-	wg.Add(1)
-	go app.syncHWMetricsWorker(ctx, wg)
+	// wg.Add(1)
+	// go app.syncHWMetricsWorker(ctx, wg)
 
 	wg.Add(1)
 	go app.syncDBMetricsWorker(ctx, wg)
 
-	wg.Add(1)
-	go app.syncNetworkMetricsWorker(ctx, wg)
+	// wg.Add(1)
+	// go app.syncNetworkMetricsWorker(ctx, wg)
 
-	wg.Add(1)
-	go app.syncApplicationMetricsWorker(ctx, wg)
+	// wg.Add(1)
+	// go app.syncApplicationMetricsWorker(ctx, wg)
 
 	// Listen on the close channel indefinitely until a
 	// `SIGINT` or `SIGTERM` is received.
@@ -125,16 +125,11 @@ func (app *App) syncHWMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
 			}
 
 			// Push to upstream LAMA APIs.
-			for host, hostData := range data {
-				if err := app.pushHWMetrics(host, hostData); err != nil {
-					app.lo.Error("Failed to push HW metrics to NSE", "host", host, "error", err)
+			for locationID, hostData := range data {
+				if err := app.pushHWMetrics(locationID, app.hardwareSvc.hosts[locationID], hostData); err != nil {
+					app.lo.Error("Failed to push HW metrics to NSE", "locationID", locationID, "error", err)
 					continue
 				}
-
-				// FIXME: Currently the LAMA API does not support multiple hosts.
-				// Once we've pushed the data for the first host, break the loop.
-				// Once the LAMA API supports multiple hosts, remove this.
-				break
 			}
 		case <-ctx.Done():
 			app.lo.Info("Stopping HW metrics worker")
@@ -160,16 +155,11 @@ func (app *App) syncDBMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
 			}
 
 			// Push to upstream LAMA APIs.
-			for host, hostData := range data {
-				if err := app.pushDBMetrics(host, hostData); err != nil {
-					app.lo.Error("Failed to push DB metrics to NSE", "host", host, "error", err)
+			for locationID, hostData := range data {
+				if err := app.pushDBMetrics(locationID, app.dbSvc.hosts[locationID], hostData); err != nil {
+					app.lo.Error("Failed to push DB metrics to NSE", "locationID", locationID, "error", err)
 					continue
 				}
-
-				// FIXME: Currently the LAMA API does not support multiple hosts.
-				// Once we've pushed the data for the first host, break the loop.
-				// Once the LAMA API supports multiple hosts, remove this.
-				break
 			}
 		case <-ctx.Done():
 			app.lo.Info("Stopping DB metrics worker")
@@ -195,16 +185,11 @@ func (app *App) syncNetworkMetricsWorker(ctx context.Context, wg *sync.WaitGroup
 			}
 
 			// Push to upstream LAMA APIs.
-			for host, hostData := range data {
-				if err := app.pushNetworkMetrics(host, hostData); err != nil {
-					app.lo.Error("Failed to push network metrics to NSE", "host", host, "error", err)
+			for locationID, hostData := range data {
+				if err := app.pushNetworkMetrics(locationID, app.networkSvc.hosts[locationID], hostData); err != nil {
+					app.lo.Error("Failed to push network metrics to NSE", "locationID", locationID, "error", err)
 					continue
 				}
-
-				// FIXME: Currently the LAMA API does not support multiple hosts.
-				// Once we've pushed the data for the first host, break the loop.
-				// Once the LAMA API supports multiple hosts, remove this.
-				break
 			}
 		case <-ctx.Done():
 			app.lo.Info("Stopping network metrics worker")
@@ -213,7 +198,6 @@ func (app *App) syncNetworkMetricsWorker(ctx context.Context, wg *sync.WaitGroup
 	}
 }
 
-// Add a new worker function for the application service.
 func (app *App) syncApplicationMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -231,16 +215,11 @@ func (app *App) syncApplicationMetricsWorker(ctx context.Context, wg *sync.WaitG
 			}
 
 			// Push to upstream LAMA APIs.
-			for host, hostData := range data {
-				if err := app.pushApplicationMetrics(host, hostData); err != nil {
-					app.lo.Error("Failed to push application metrics to NSE", "host", host, "error", err)
+			for locationID, hostData := range data {
+				if err := app.pushApplicationMetrics(locationID, app.applicationSvc.hosts[locationID], hostData); err != nil {
+					app.lo.Error("Failed to push application metrics to NSE", "locationID", locationID, "error", err)
 					continue
 				}
-
-				// FIXME: Currently the LAMA API does not support multiple hosts.
-				// Once we've pushed the data for the first host, break the loop.
-				// Once the LAMA API supports multiple hosts, remove this.
-				break
 			}
 		case <-ctx.Done():
 			app.lo.Info("Stopping application metrics worker")
