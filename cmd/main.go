@@ -84,17 +84,17 @@ func main() {
 	// Start the workers for fetching different metrics in the background.
 	var wg = &sync.WaitGroup{}
 
-	// wg.Add(1)
-	// go app.syncHWMetricsWorker(ctx, wg)
+	wg.Add(1)
+	go app.syncHWMetricsWorker(ctx, wg)
 
 	wg.Add(1)
 	go app.syncDBMetricsWorker(ctx, wg)
 
-	// wg.Add(1)
-	// go app.syncNetworkMetricsWorker(ctx, wg)
+	wg.Add(1)
+	go app.syncNetworkMetricsWorker(ctx, wg)
 
-	// wg.Add(1)
-	// go app.syncApplicationMetricsWorker(ctx, wg)
+	wg.Add(1)
+	go app.syncApplicationMetricsWorker(ctx, wg)
 
 	// Listen on the close channel indefinitely until a
 	// `SIGINT` or `SIGTERM` is received.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -162,6 +163,7 @@ func New(lo *slog.Logger, opts Opts) (*Manager, error) {
 	} else {
 		h.Add("Cookie", "prod")
 	}
+	h.Set("Accept", "application/json") // Explicitly state accepted response format
 
 	// Set common fields for logger.
 	lgr := lo.With("login_id", opts.LoginID, "member_id", opts.MemberID, "exchange_id", opts.ExchangeID)
@@ -219,7 +221,9 @@ func (mgr *Manager) Login() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		mgr.lo.Error("Unexpected HTTP status code", "status_code", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyString := string(bodyBytes)
+		mgr.lo.Error("Unexpected HTTP status code", "status_code", resp.StatusCode, "response_body", bodyString)
 		return fmt.Errorf("HTTP request returned status code %d", resp.StatusCode)
 	}
 
@@ -694,10 +698,10 @@ func newMetricData(key string, avg float64, simple bool) MetricData {
 		}
 
 		value = MetricValue{
-			Min: 0,
-			Max: 0,
+			Min: data,
+			Max: data,
 			Avg: data,
-			Med: 0,
+			Med: data,
 		}
 	}
 
