@@ -597,6 +597,7 @@ func createNetworkReq(metrics models.NetworkPromResp, memberId string, exchangeI
 				ApplicationID: applicationId,
 				MetricData: []MetricData{
 					newMetricData("packetCount", float64(metrics.PacketErrors), true),
+					newMetricData("bandwidth", 0.0, false),
 				},
 			},
 		},
@@ -616,6 +617,8 @@ func createAppReq(metrics models.AppPromResp, memberId string, exchangeId, seque
 				MetricData: []MetricData{
 					newMetricData("throughput", float64(metrics.Throughput), false),
 					newMetricData("failureTradeApi", float64(metrics.FailureCount), true),
+					newMetricData("latency", 0.0, false),
+					newMetricData("failureAuthentication", 0.0, true),
 				},
 			},
 		},
@@ -655,6 +658,9 @@ func createDatabaseReq(metrics models.DBPromResp, memberId string, exchangeId, s
 				ApplicationID: applicationId,
 				MetricData: []MetricData{
 					newMetricData("status", float64(metrics.Status), true),
+					newMetricData("latency", 0.0, false),
+					newMetricData("qSize", 0.0, false),
+					newMetricData("bandwidth", 0.0, false),
 				},
 			},
 		},
