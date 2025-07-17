@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -96,6 +97,12 @@ type MetricValue struct {
 }
 
 type MetricPayload struct {
+	// -1=Not Applicable
+	// 1= Client Connectivity
+	// 2= Order Management System
+	// 3= Risk Management System
+	// 4= Exchange Connectivity
+	// In our case, it's always 1.
 	ApplicationID int          `json:"applicationId"`
 	MetricData    []MetricData `json:"metricData"`
 }
@@ -104,6 +111,7 @@ type HardwareReq struct {
 	MemberID   string          `json:"memberId"`
 	ExchangeID int             `json:"exchangeId"`
 	SequenceID int             `json:"sequenceId"`
+	LocationID int             `json:"locationId"`
 	Timestamp  int64           `json:"timestamp"`
 	Payload    []MetricPayload `json:"payload"`
 }
@@ -112,6 +120,7 @@ type DatabaseReq struct {
 	MemberID   string          `json:"memberId"`
 	ExchangeID int             `json:"exchangeId"`
 	SequenceID int             `json:"sequenceId"`
+	LocationID int             `json:"locationId"`
 	Timestamp  int64           `json:"timestamp"`
 	Payload    []MetricPayload `json:"payload"`
 }
@@ -120,6 +129,7 @@ type NetworkReq struct {
 	MemberID   string          `json:"memberId"`
 	ExchangeID int             `json:"exchangeId"`
 	SequenceID int             `json:"sequenceId"`
+	LocationID int             `json:"locationId"`
 	Timestamp  int64           `json:"timestamp"`
 	Payload    []MetricPayload `json:"payload"`
 }
@@ -128,6 +138,7 @@ type AppReq struct {
 	MemberID   string          `json:"memberId"`
 	ExchangeID int             `json:"exchangeId"`
 	SequenceID int             `json:"sequenceId"`
+	LocationID int             `json:"locationId"`
 	Timestamp  int64           `json:"timestamp"`
 	Payload    []MetricPayload `json:"payload"`
 }
@@ -152,6 +163,7 @@ func New(lo *slog.Logger, opts Opts) (*Manager, error) {
 	} else {
 		h.Add("Cookie", "prod")
 	}
+	h.Set("Accept", "application/json") // Explicitly state accepted response format
 
 	// Set common fields for logger.
 	lgr := lo.With("login_id", opts.LoginID, "member_id", opts.MemberID, "exchange_id", opts.ExchangeID)
@@ -209,7 +221,9 @@ func (mgr *Manager) Login() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		mgr.lo.Error("Unexpected HTTP status code", "status_code", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyString := string(bodyBytes)
+		mgr.lo.Error("Unexpected HTTP status code", "status_code", resp.StatusCode, "response_body", bodyString)
 		return fmt.Errorf("HTTP request returned status code %d", resp.StatusCode)
 	}
 
@@ -234,7 +248,7 @@ func (mgr *Manager) Login() error {
 }
 
 // PushHWMetrics is used to push database metrics to NSE LAMA API.
-func (mgr *Manager) PushHWMetrics(host string, data models.HWPromResp) error {
+func (mgr *Manager) PushHWMetrics(locationID int, host string, data models.HWPromResp) error {
 	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/hardware")
 
 	mgr.RLock()
@@ -242,7 +256,7 @@ func (mgr *Manager) PushHWMetrics(host string, data models.HWPromResp) error {
 	seqID := mgr.hwSeqID
 	mgr.RUnlock()
 
-	hwPayload := createHardwareReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1)
+	hwPayload := createHardwareReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, 1)
 
 	payload, err := json.Marshal(hwPayload)
 	if err != nil {
@@ -250,7 +264,7 @@ func (mgr *Manager) PushHWMetrics(host string, data models.HWPromResp) error {
 		return fmt.Errorf("failed to marshal hardware metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send hardware metrics", "host", host, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	mgr.lo.Info("Preparing to send hardware metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
@@ -317,17 +331,15 @@ func (mgr *Manager) PushHWMetrics(host string, data models.HWPromResp) error {
 	return nil
 }
 
-// PushDBMetrics sends database metrics to NSE LAMA API.
-func (mgr *Manager) PushDBMetrics(host string, data models.DBPromResp) error {
+func (mgr *Manager) PushDBMetrics(locationID int, host string, data models.DBPromResp) error {
 	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/database")
 
-	// Acquire read lock to safely read token and sequence ID.
 	mgr.RLock()
 	token := mgr.token
 	seqID := mgr.dbSeqID
 	mgr.RUnlock()
 
-	dbPayload := createDatabaseReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1)
+	dbPayload := createDatabaseReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, 1)
 
 	payload, err := json.Marshal(dbPayload)
 	if err != nil {
@@ -335,23 +347,20 @@ func (mgr *Manager) PushDBMetrics(host string, data models.DBPromResp) error {
 		return fmt.Errorf("failed to marshal database metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send database metrics", "host", host, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	mgr.lo.Info("Preparing to send database metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
 
-	// Initialize new HTTP request for metrics push.
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
 		mgr.lo.Error("Failed to create HTTP request", "error", err)
 		return fmt.Errorf("failed to create HTTP request: %v", err)
 	}
 
-	// Set headers for the request.
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	for k, v := range mgr.headers {
 		req.Header.Set(k, strings.Join(v, ","))
 	}
 
-	// Execute HTTP request using the HTTP client.
 	resp, err := mgr.client.Do(req)
 	if err != nil {
 		mgr.lo.Error("Database metrics HTTP request failed", "error", err)
@@ -359,7 +368,6 @@ func (mgr *Manager) PushDBMetrics(host string, data models.DBPromResp) error {
 	}
 	defer resp.Body.Close()
 
-	// Unmarshal the response into MetricsResp object.
 	var r MetricsResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		mgr.lo.Error("Failed to unmarshal database metrics response", "error", err)
@@ -398,7 +406,6 @@ func (mgr *Manager) PushDBMetrics(host string, data models.DBPromResp) error {
 		}
 	}
 
-	// Increase sequence ID if metrics push was successful or partially successful.
 	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
 		mgr.Lock()
 		mgr.dbSeqID++
@@ -408,53 +415,16 @@ func (mgr *Manager) PushDBMetrics(host string, data models.DBPromResp) error {
 	return nil
 }
 
-// Function to create a new MetricData.
-func newMetricData(key string, avg float64, simple bool) MetricData {
-	var value interface{}
-	if simple {
-		value = avg
-	} else {
-		var strValue string
-		switch key {
-		case "uptime":
-			strValue = fmt.Sprintf("%.0f", avg)
-		default:
-			strValue = fmt.Sprintf("%.2f", avg)
-		}
-
-		// Convert the string back to a float64.
-		data, err := strconv.ParseFloat(strValue, 64)
-		if err != nil {
-			// TODO: Handle error. For now fallback to original value.
-			fmt.Println("failed to convert string to float64", "value", strValue, "error", err, "key", key, "avg", avg)
-			data = avg
-		}
-
-		value = MetricValue{
-			Min: 0,
-			Max: 0,
-			Avg: data,
-			Med: 0,
-		}
-	}
-
-	return MetricData{
-		Key:   key,
-		Value: value,
-	}
-}
-
 // PushNetworkMetrics sends network metrics to NSE LAMA API.
-func (mgr *Manager) PushNetworkMetrics(host string, data models.NetworkPromResp) error {
+func (mgr *Manager) PushNetworkMetrics(locationID int, host string, data models.NetworkPromResp) error {
 	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/network")
 
-	// Acquire read lock to safely read token and sequence ID.
 	mgr.RLock()
 	token := mgr.token
 	seqID := mgr.netSeqID
 	mgr.RUnlock()
 
-	netPayload := createNetworkReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1)
+	netPayload := createNetworkReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, 1)
 
 	payload, err := json.Marshal(netPayload)
 	if err != nil {
@@ -462,23 +432,20 @@ func (mgr *Manager) PushNetworkMetrics(host string, data models.NetworkPromResp)
 		return fmt.Errorf("failed to marshal network metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send network metrics", "host", host, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	mgr.lo.Info("Preparing to send network metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
 
-	// Initialize new HTTP request for metrics push.
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
 		mgr.lo.Error("Failed to create HTTP request", "error", err)
 		return fmt.Errorf("failed to create HTTP request: %v", err)
 	}
 
-	// Set headers for the request.
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	for k, v := range mgr.headers {
 		req.Header.Set(k, strings.Join(v, ","))
 	}
 
-	// Execute HTTP request using the HTTP client.
 	resp, err := mgr.client.Do(req)
 	if err != nil {
 		mgr.lo.Error("Network metrics HTTP request failed", "error", err)
@@ -486,7 +453,6 @@ func (mgr *Manager) PushNetworkMetrics(host string, data models.NetworkPromResp)
 	}
 	defer resp.Body.Close()
 
-	// Unmarshal the response into MetricsResp object.
 	var r MetricsResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		mgr.lo.Error("Failed to unmarshal network metrics response", "error", err)
@@ -525,7 +491,6 @@ func (mgr *Manager) PushNetworkMetrics(host string, data models.NetworkPromResp)
 		}
 	}
 
-	// Increase sequence ID if metrics push was successful or partially successful.
 	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
 		mgr.Lock()
 		mgr.netSeqID++
@@ -536,16 +501,15 @@ func (mgr *Manager) PushNetworkMetrics(host string, data models.NetworkPromResp)
 }
 
 // PushAppMetrics sends app metrics to NSE LAMA API.
-func (mgr *Manager) PushAppMetrics(host string, data models.AppPromResp) error {
+func (mgr *Manager) PushAppMetrics(locationID int, host string, data models.AppPromResp) error {
 	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/application")
 
-	// Acquire read lock to safely read token and sequence ID.
 	mgr.RLock()
 	token := mgr.token
 	seqID := mgr.netSeqID
 	mgr.RUnlock()
 
-	appPayload := createAppReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1)
+	appPayload := createAppReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, 1)
 
 	payload, err := json.Marshal(appPayload)
 	if err != nil {
@@ -553,23 +517,20 @@ func (mgr *Manager) PushAppMetrics(host string, data models.AppPromResp) error {
 		return fmt.Errorf("failed to marshal app metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send app metrics", "host", host, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	mgr.lo.Info("Preparing to send app metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
 
-	// Initialize new HTTP request for metrics push.
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
 		mgr.lo.Error("Failed to create HTTP request", "error", err)
 		return fmt.Errorf("failed to create HTTP request: %v", err)
 	}
 
-	// Set headers for the request.
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	for k, v := range mgr.headers {
 		req.Header.Set(k, strings.Join(v, ","))
 	}
 
-	// Execute HTTP request using the HTTP client.
 	resp, err := mgr.client.Do(req)
 	if err != nil {
 		mgr.lo.Error("App metrics HTTP request failed", "error", err)
@@ -577,7 +538,6 @@ func (mgr *Manager) PushAppMetrics(host string, data models.AppPromResp) error {
 	}
 	defer resp.Body.Close()
 
-	// Unmarshal the response into MetricsResp object.
 	var r MetricsResp
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		mgr.lo.Error("Failed to unmarshal app metrics response", "error", err)
@@ -616,7 +576,6 @@ func (mgr *Manager) PushAppMetrics(host string, data models.AppPromResp) error {
 		}
 	}
 
-	// Increase sequence ID if metrics push was successful or partially successful.
 	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
 		mgr.Lock()
 		mgr.netSeqID++
@@ -626,28 +585,31 @@ func (mgr *Manager) PushAppMetrics(host string, data models.AppPromResp) error {
 	return nil
 }
 
-func createNetworkReq(metrics models.NetworkPromResp, memberId string, exchangeId, sequenceId, applicationId int) NetworkReq {
+func createNetworkReq(metrics models.NetworkPromResp, memberId string, exchangeId, sequenceId, locationID, applicationId int) NetworkReq {
 	return NetworkReq{
 		MemberID:   memberId,
 		ExchangeID: exchangeId,
 		SequenceID: sequenceId,
+		LocationID: locationID,
 		Timestamp:  time.Now().Unix(),
 		Payload: []MetricPayload{
 			{
 				ApplicationID: applicationId,
 				MetricData: []MetricData{
 					newMetricData("packetCount", float64(metrics.PacketErrors), true),
+					newMetricData("bandwidth", 0.0, false),
 				},
 			},
 		},
 	}
 }
 
-func createAppReq(metrics models.AppPromResp, memberId string, exchangeId, sequenceId, applicationId int) AppReq {
+func createAppReq(metrics models.AppPromResp, memberId string, exchangeId, sequenceId, locationID, applicationId int) AppReq {
 	return AppReq{
 		MemberID:   memberId,
 		ExchangeID: exchangeId,
 		SequenceID: sequenceId,
+		LocationID: locationID,
 		Timestamp:  time.Now().Unix(),
 		Payload: []MetricPayload{
 			{
@@ -655,17 +617,20 @@ func createAppReq(metrics models.AppPromResp, memberId string, exchangeId, seque
 				MetricData: []MetricData{
 					newMetricData("throughput", float64(metrics.Throughput), false),
 					newMetricData("failureTradeApi", float64(metrics.FailureCount), true),
+					newMetricData("latency", 0.0, false),
+					newMetricData("failureAuthentication", 0.0, true),
 				},
 			},
 		},
 	}
 }
 
-func createHardwareReq(metrics models.HWPromResp, memberId string, exchangeId, sequenceId, applicationId int) HardwareReq {
+func createHardwareReq(metrics models.HWPromResp, memberId string, exchangeId, sequenceId, locationID, applicationId int) HardwareReq {
 	return HardwareReq{
 		MemberID:   memberId,
 		ExchangeID: exchangeId,
 		SequenceID: sequenceId,
+		LocationID: locationID,
 		Timestamp:  time.Now().Unix(),
 		Payload: []MetricPayload{
 			{
@@ -681,17 +646,21 @@ func createHardwareReq(metrics models.HWPromResp, memberId string, exchangeId, s
 	}
 }
 
-func createDatabaseReq(metrics models.DBPromResp, memberId string, exchangeId, sequenceId, applicationId int) DatabaseReq {
+func createDatabaseReq(metrics models.DBPromResp, memberId string, exchangeId, sequenceId, locationID, applicationId int) DatabaseReq {
 	return DatabaseReq{
 		MemberID:   memberId,
 		ExchangeID: exchangeId,
 		SequenceID: sequenceId,
+		LocationID: locationID,
 		Timestamp:  time.Now().Unix(),
 		Payload: []MetricPayload{
 			{
 				ApplicationID: applicationId,
 				MetricData: []MetricData{
 					newMetricData("status", float64(metrics.Status), true),
+					newMetricData("latency", 0.0, false),
+					newMetricData("qSize", 0.0, false),
+					newMetricData("bandwidth", 0.0, false),
 				},
 			},
 		},
@@ -710,4 +679,40 @@ func extractExpectedSequenceID(desc string) (int, error) {
 	}
 
 	return strconv.Atoi(matches[1])
+}
+
+// Function to create a new MetricData.
+func newMetricData(key string, avg float64, simple bool) MetricData {
+	var value interface{}
+	if simple {
+		value = avg
+	} else {
+		var strValue string
+		switch key {
+		case "uptime":
+			strValue = fmt.Sprintf("%.0f", avg)
+		default:
+			strValue = fmt.Sprintf("%.2f", avg)
+		}
+
+		// Convert the string back to a float64.
+		data, err := strconv.ParseFloat(strValue, 64)
+		if err != nil {
+			// TODO: Handle error. For now fallback to original value.
+			fmt.Println("failed to convert string to float64", "value", strValue, "error", err, "key", key, "avg", avg)
+			data = avg
+		}
+
+		value = MetricValue{
+			Min: data,
+			Max: data,
+			Avg: data,
+			Med: data,
+		}
+	}
+
+	return MetricData{
+		Key:   key,
+		Value: value,
+	}
 }
