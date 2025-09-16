@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zerodha/mii-lama/internal/metrics"
@@ -266,123 +267,71 @@ func (app *App) fetchCapacityMetrics() (map[int]models.CapacityPromResp, error) 
 	return capacityMetrics, nil
 }
 
-func (app *App) pushHWMetrics(locationID int, host string, data models.HWPromResp) error {
+func (app *App) retryPushWithSequenceSync(operation func() error, operationType, host string, locationID int) error {
 	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushHWMetrics(locationID, host, data); err != nil {
+		if err := operation(); err != nil {
 			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push hardware metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
+				if strings.Contains(err.Error(), "sequence ID") && strings.Contains(err.Error(), "updated") {
+					app.lo.Debug("Sequence ID sync required, retrying",
+						"type", operationType,
+						"host", host,
+						"locationID", locationID,
+						"attempt", i+1)
+				} else {
+					app.lo.Error("Failed to push metrics to NSE. Retrying...",
+						"type", operationType,
+						"host", host,
+						"locationID", locationID,
+						"attempt", i+1,
+						"error", err)
+				}
 				time.Sleep(app.opts.RetryInterval)
 				continue
 			}
-			app.lo.Error("Failed to push hardware metrics to NSE after max retries",
+			app.lo.Error("Failed to push metrics to NSE after max retries",
+				"type", operationType,
 				"host", host,
 				"locationID", locationID,
 				"max_retries", app.opts.MaxRetries,
 				"error", err)
 			return err
 		}
+		app.lo.Info("Metrics pushed successfully",
+			"type", operationType,
+			"host", host,
+			"locationID", locationID)
 		break
 	}
 	return nil
+}
+
+func (app *App) pushHWMetrics(locationID int, host string, data models.HWPromResp) error {
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushHWMetrics(locationID, host, data) },
+		"hardware", host, locationID)
 }
 
 func (app *App) pushDBMetrics(locationID int, host string, data models.DBPromResp) error {
-	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushDBMetrics(locationID, host, data); err != nil {
-			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push database metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
-				time.Sleep(app.opts.RetryInterval)
-				continue
-			}
-			app.lo.Error("Failed to push database metrics to NSE after max retries",
-				"host", host,
-				"locationID", locationID,
-				"max_retries", app.opts.MaxRetries,
-				"error", err)
-			return err
-		}
-		break
-	}
-	return nil
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushDBMetrics(locationID, host, data) },
+		"database", host, locationID)
 }
 
 func (app *App) pushNetworkMetrics(locationID int, host string, data models.NetworkPromResp) error {
-	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushNetworkMetrics(locationID, host, data); err != nil {
-			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push network metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
-				time.Sleep(app.opts.RetryInterval)
-				continue
-			}
-			app.lo.Error("Failed to push network metrics to NSE after max retries",
-				"host", host,
-				"locationID", locationID,
-				"max_retries", app.opts.MaxRetries,
-				"error", err)
-			return err
-		}
-		break
-	}
-	return nil
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushNetworkMetrics(locationID, host, data) },
+		"network", host, locationID)
 }
 
 func (app *App) pushApplicationMetrics(locationID int, host string, data models.AppPromResp) error {
-	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushAppMetrics(locationID, host, data); err != nil {
-			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push application metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
-				time.Sleep(app.opts.RetryInterval)
-				continue
-			}
-			app.lo.Error("Failed to push application metrics to NSE after max retries",
-				"host", host,
-				"locationID", locationID,
-				"max_retries", app.opts.MaxRetries,
-				"error", err)
-			return err
-		}
-		break
-	}
-	return nil
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushAppMetrics(locationID, host, data) },
+		"application", host, locationID)
 }
 
 func (app *App) pushCapacityMetrics(locationID int, host string, data models.CapacityPromResp) error {
-	for i := 0; i < app.opts.MaxRetries; i++ {
-		ordersCapacity := app.capacitySvc.benchmark["orders_per_second"]
-		if err := app.nseMgr.PushCapacityMetrics(locationID, host, data, ordersCapacity); err != nil {
-			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push capacity metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
-				time.Sleep(app.opts.RetryInterval)
-				continue
-			}
-			app.lo.Error("Failed to push capacity metrics to NSE after max retries",
-				"host", host,
-				"locationID", locationID,
-				"max_retries", app.opts.MaxRetries,
-				"error", err)
-			return err
-		}
-		break
-	}
-	return nil
+	ordersCapacity := app.capacitySvc.benchmark["orders_per_second"]
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushCapacityMetrics(locationID, host, data, ordersCapacity) },
+		"capacity", host, locationID)
 }

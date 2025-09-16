@@ -1,5 +1,5 @@
 [app]
-log_level = "debug" # To enable debug logging, level should be `debug`.
+log_level = "info" # To enable debug logging, level should be `debug`.
 max_retries = 3 # Maximum number of retries for a failed request.
 retry_interval = "5s" # Interval at which the app should retry if the previous request failed.
 sync_interval = "5m" # Interval at which the app should fetch data from metrics store.

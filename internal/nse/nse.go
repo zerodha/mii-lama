@@ -3,7 +3,6 @@ package nse
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,7 +23,51 @@ const (
 	NSE_RESP_CODE_INVALID_SEQ_ID  = 704
 	NSE_RESP_CODE_INVALID_TOKEN   = 801
 	NSE_RESP_CODE_EXPIRED_TOKEN   = 802
+
+	// Default application ID used for metrics
+	DEFAULT_APPLICATION_ID = 1
+	// Default market segment for capacity metrics
+	DEFAULT_MARKET_SEGMENT = 1
 )
+
+var (
+	// Pre-compiled regex for extracting sequence ID from NSE error messages
+	// Handles both formats: "SequenceId should be 123" and "The SequenceId should be 123"
+	sequenceIDRegex = regexp.MustCompile(`(?i)(?:the\s+)?sequenceid\s+should\s+be\s+(\d+)`)
+)
+
+// sequenceIDSyncHandler handles sequence ID synchronization for different metric types
+func (mgr *Manager) sequenceIDSyncHandler(r MetricsResp, metricType string) error {
+	expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
+	if err != nil {
+		// Some NSE endpoints return incomplete error messages without the expected sequence ID
+		// In such cases, initialize with 1 (typical API starting sequence ID)
+		mgr.lo.Warn("Seq ID extraction failed, using 1", "type", metricType, "error", err)
+		expectedSeqID = 1
+	} else {
+		mgr.lo.Debug("Seq ID sync", "type", metricType, "seq_id", expectedSeqID)
+	}
+
+	mgr.Lock()
+	defer mgr.Unlock()
+
+	switch metricType {
+	case "hardware":
+		mgr.hwSeqID = expectedSeqID
+	case "database":
+		mgr.dbSeqID = expectedSeqID
+	case "network":
+		mgr.netSeqID = expectedSeqID
+	case "application":
+		mgr.appSeqID = expectedSeqID
+	case "capacity":
+		mgr.capSeqID = expectedSeqID
+	default:
+		return fmt.Errorf("unknown metric type: %s", metricType)
+	}
+
+	return fmt.Errorf("seq ID updated to %d, retrying %s", expectedSeqID, metricType)
+}
 
 type Opts struct {
 	URL             string
@@ -52,6 +95,7 @@ type Manager struct {
 	dbSeqID  int
 	hwSeqID  int
 	netSeqID int
+	appSeqID int
 	capSeqID int
 }
 
@@ -260,7 +304,7 @@ func (mgr *Manager) Login() error {
 		return fmt.Errorf("login failed with NSE response code %d and description: %s", r.ResponseCode, r.ResponseDesc)
 	}
 
-	mgr.lo.Info("Login successful", "login_id", mgr.opts.LoginID, "member_id", mgr.opts.MemberID, "token", r.Token)
+	mgr.lo.Info("NSE login OK", "member_id", mgr.opts.MemberID)
 
 	mgr.Lock()
 	mgr.token = r.Token
@@ -269,7 +313,7 @@ func (mgr *Manager) Login() error {
 	return nil
 }
 
-// PushHWMetrics is used to push database metrics to NSE LAMA API.
+// PushHWMetrics is used to push hardware metrics to NSE LAMA API.
 func (mgr *Manager) PushHWMetrics(locationID int, host string, data models.HWPromResp) error {
 	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/hardware")
 
@@ -278,7 +322,7 @@ func (mgr *Manager) PushHWMetrics(locationID int, host string, data models.HWPro
 	seqID := mgr.hwSeqID
 	mgr.RUnlock()
 
-	hwPayload := createHardwareReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, 1)
+	hwPayload := createHardwareReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, DEFAULT_APPLICATION_ID)
 
 	payload, err := json.Marshal(hwPayload)
 	if err != nil {
@@ -286,7 +330,8 @@ func (mgr *Manager) PushHWMetrics(locationID int, host string, data models.HWPro
 		return fmt.Errorf("failed to marshal hardware metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send hardware metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	// Detailed request logging only in debug mode
+	mgr.lo.Debug("Sending HW metrics", "host", host, "seq_id", hwPayload.SequenceID)
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
@@ -313,13 +358,16 @@ func (mgr *Manager) PushHWMetrics(locationID int, host string, data models.HWPro
 		return fmt.Errorf("failed to unmarshal hardware metrics response: %v", err)
 	}
 
-	mgr.lo.Info("Received response for hardware metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+	// Success case - minimal logging
+	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
+		mgr.lo.Debug("HW metrics OK", "host", host, "seq_id", hwPayload.SequenceID)
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		mgr.lo.Error("Hardware metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		mgr.lo.Error("HW metrics failed", "code", r.ResponseCode, "desc", r.ResponseDesc)
 		switch r.ResponseCode {
 		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
-			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			mgr.lo.Warn("Token expired, relogging")
 			if err := mgr.Login(); err != nil {
 				mgr.lo.Error("Relogin attempt failed", "error", err)
 				return fmt.Errorf("failed to log in again: %v", err)
@@ -327,20 +375,11 @@ func (mgr *Manager) PushHWMetrics(locationID int, host string, data models.HWPro
 			return fmt.Errorf("new token obtained after relogin, retrying hardware metrics push")
 
 		case NSE_RESP_CODE_INVALID_SEQ_ID:
-			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
-			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
-			if err != nil {
-				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
-				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
-			}
-			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
-			mgr.Lock()
-			mgr.hwSeqID = expectedSeqID
-			mgr.Unlock()
-			return fmt.Errorf("sequence ID updated, retrying hardware metrics push")
+			return mgr.sequenceIDSyncHandler(r, "hardware")
 
 		default:
-			return fmt.Errorf("hardware metrics push failed with NSE response code %d", r.ResponseCode)
+			mgr.lo.Error("HW metrics failed", "response_code", r.ResponseCode)
+			return fmt.Errorf("hardware metrics push failed with unhandled response code: %d", r.ResponseCode)
 		}
 	}
 
@@ -361,7 +400,7 @@ func (mgr *Manager) PushDBMetrics(locationID int, host string, data models.DBPro
 	seqID := mgr.dbSeqID
 	mgr.RUnlock()
 
-	dbPayload := createDatabaseReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, 1)
+	dbPayload := createDatabaseReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, DEFAULT_APPLICATION_ID)
 
 	payload, err := json.Marshal(dbPayload)
 	if err != nil {
@@ -369,7 +408,7 @@ func (mgr *Manager) PushDBMetrics(locationID int, host string, data models.DBPro
 		return fmt.Errorf("failed to marshal database metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send database metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	mgr.lo.Debug("Sending DB metrics", "host", host, "seq_id", dbPayload.SequenceID)
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
@@ -396,13 +435,13 @@ func (mgr *Manager) PushDBMetrics(locationID int, host string, data models.DBPro
 		return fmt.Errorf("failed to unmarshal database metrics response: %v", err)
 	}
 
-	mgr.lo.Info("Received response for database metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+	mgr.lo.Debug("DB metrics response", "code", r.ResponseCode, "status", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
-		mgr.lo.Error("Database metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		mgr.lo.Error("DB metrics failed", "code", r.ResponseCode, "desc", r.ResponseDesc)
 		switch r.ResponseCode {
 		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
-			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			mgr.lo.Warn("Token expired, relogging")
 			if err := mgr.Login(); err != nil {
 				mgr.lo.Error("Relogin attempt failed", "error", err)
 				return fmt.Errorf("failed to log in again: %v", err)
@@ -410,20 +449,10 @@ func (mgr *Manager) PushDBMetrics(locationID int, host string, data models.DBPro
 			return fmt.Errorf("new token obtained after relogin, retrying database metrics push")
 
 		case NSE_RESP_CODE_INVALID_SEQ_ID:
-			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
-			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
-			if err != nil {
-				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
-				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
-			}
-			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
-			mgr.Lock()
-			mgr.dbSeqID = expectedSeqID
-			mgr.Unlock()
-			return fmt.Errorf("sequence ID has been updated, retrying database metrics push")
+			return mgr.sequenceIDSyncHandler(r, "database")
 
 		default:
-			mgr.lo.Error("Database metrics push failed with unhandled response code", "response_code", r.ResponseCode)
+			mgr.lo.Error("DB metrics failed", "response_code", r.ResponseCode)
 			return fmt.Errorf("database metrics push failed with unhandled response code: %d", r.ResponseCode)
 		}
 	}
@@ -446,7 +475,7 @@ func (mgr *Manager) PushNetworkMetrics(locationID int, host string, data models.
 	seqID := mgr.netSeqID
 	mgr.RUnlock()
 
-	netPayload := createNetworkReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, 1)
+	netPayload := createNetworkReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, DEFAULT_APPLICATION_ID)
 
 	payload, err := json.Marshal(netPayload)
 	if err != nil {
@@ -454,7 +483,7 @@ func (mgr *Manager) PushNetworkMetrics(locationID int, host string, data models.
 		return fmt.Errorf("failed to marshal network metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send network metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	mgr.lo.Debug("Sending NET metrics", "host", host, "seq_id", netPayload.SequenceID)
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
@@ -481,13 +510,13 @@ func (mgr *Manager) PushNetworkMetrics(locationID int, host string, data models.
 		return fmt.Errorf("failed to unmarshal network metrics response: %v", err)
 	}
 
-	mgr.lo.Info("Received response for network metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+	mgr.lo.Debug("NET metrics response", "code", r.ResponseCode, "status", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
-		mgr.lo.Error("Network metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		mgr.lo.Error("NET metrics failed", "code", r.ResponseCode, "desc", r.ResponseDesc)
 		switch r.ResponseCode {
 		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
-			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			mgr.lo.Warn("Token expired, relogging")
 			if err := mgr.Login(); err != nil {
 				mgr.lo.Error("Relogin attempt failed", "error", err)
 				return fmt.Errorf("failed to log in again: %v", err)
@@ -495,20 +524,10 @@ func (mgr *Manager) PushNetworkMetrics(locationID int, host string, data models.
 			return fmt.Errorf("new token obtained after relogin, retrying network metrics push")
 
 		case NSE_RESP_CODE_INVALID_SEQ_ID:
-			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
-			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
-			if err != nil {
-				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
-				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
-			}
-			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
-			mgr.Lock()
-			mgr.netSeqID = expectedSeqID
-			mgr.Unlock()
-			return fmt.Errorf("sequence ID has been updated, retrying network metrics push")
+			return mgr.sequenceIDSyncHandler(r, "network")
 
 		default:
-			mgr.lo.Error("Network metrics push failed with unhandled response code", "response_code", r.ResponseCode)
+			mgr.lo.Error("NET metrics failed", "response_code", r.ResponseCode)
 			return fmt.Errorf("network metrics push failed with unhandled response code: %d", r.ResponseCode)
 		}
 	}
@@ -528,10 +547,10 @@ func (mgr *Manager) PushAppMetrics(locationID int, host string, data models.AppP
 
 	mgr.RLock()
 	token := mgr.token
-	seqID := mgr.netSeqID
+	seqID := mgr.appSeqID
 	mgr.RUnlock()
 
-	appPayload := createAppReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, 1)
+	appPayload := createAppReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, locationID, DEFAULT_APPLICATION_ID)
 
 	payload, err := json.Marshal(appPayload)
 	if err != nil {
@@ -539,7 +558,7 @@ func (mgr *Manager) PushAppMetrics(locationID int, host string, data models.AppP
 		return fmt.Errorf("failed to marshal app metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send app metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	mgr.lo.Debug("Sending APP metrics", "host", host, "seq_id", appPayload.SequenceID)
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
@@ -566,13 +585,13 @@ func (mgr *Manager) PushAppMetrics(locationID int, host string, data models.AppP
 		return fmt.Errorf("failed to unmarshal app metrics response: %v", err)
 	}
 
-	mgr.lo.Info("Received response for app metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+	mgr.lo.Debug("APP metrics response", "code", r.ResponseCode, "status", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
-		mgr.lo.Error("App metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		mgr.lo.Error("APP metrics failed", "code", r.ResponseCode, "desc", r.ResponseDesc)
 		switch r.ResponseCode {
 		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
-			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			mgr.lo.Warn("Token expired, relogging")
 			if err := mgr.Login(); err != nil {
 				mgr.lo.Error("Relogin attempt failed", "error", err)
 				return fmt.Errorf("failed to log in again: %v", err)
@@ -580,27 +599,17 @@ func (mgr *Manager) PushAppMetrics(locationID int, host string, data models.AppP
 			return fmt.Errorf("new token obtained after relogin, retrying app metrics push")
 
 		case NSE_RESP_CODE_INVALID_SEQ_ID:
-			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
-			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
-			if err != nil {
-				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
-				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
-			}
-			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
-			mgr.Lock()
-			mgr.netSeqID = expectedSeqID
-			mgr.Unlock()
-			return fmt.Errorf("sequence ID has been updated, retrying app metrics push")
+			return mgr.sequenceIDSyncHandler(r, "application")
 
 		default:
-			mgr.lo.Error("App metrics push failed with unhandled response code", "response_code", r.ResponseCode)
+			mgr.lo.Error("APP metrics failed", "response_code", r.ResponseCode)
 			return fmt.Errorf("app metrics push failed with unhandled response code: %d", r.ResponseCode)
 		}
 	}
 
 	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS {
 		mgr.Lock()
-		mgr.netSeqID++
+		mgr.appSeqID++
 		mgr.Unlock()
 	}
 
@@ -692,12 +701,12 @@ func createDatabaseReq(metrics models.DBPromResp, memberId string, exchangeId, s
 // extractExpectedSequenceID extracts the expected SequenceID value from a provided
 // error description. It returns the extracted SequenceID as an integer. If the
 // description does not contain a valid SequenceID, the function returns an error.
+
 func extractExpectedSequenceID(desc string) (int, error) {
-	re := regexp.MustCompile(`SequenceId should be (\d+)`)
-	matches := re.FindStringSubmatch(desc)
+	matches := sequenceIDRegex.FindStringSubmatch(desc)
 
 	if len(matches) < 2 {
-		return 0, errors.New("expected SequenceID not found in the description")
+		return 0, fmt.Errorf("expected SequenceID not found in description: '%s'", desc)
 	}
 
 	return strconv.Atoi(matches[1])
@@ -720,8 +729,8 @@ func newMetricData(key string, avg float64, simple bool) MetricData {
 		// Convert the string back to a float64.
 		data, err := strconv.ParseFloat(strValue, 64)
 		if err != nil {
-			// TODO: Handle error. For now fallback to original value.
-			fmt.Println("failed to convert string to float64", "value", strValue, "error", err, "key", key, "avg", avg)
+			// Log error and fallback to original value
+			// Note: This should rarely happen as we control the formatting
 			data = avg
 		}
 
@@ -758,7 +767,7 @@ func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models
 		return fmt.Errorf("failed to marshal capacity metrics payload: %v", err)
 	}
 
-	mgr.lo.Info("Preparing to send capacity metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+	mgr.lo.Debug("Sending CAP metrics", "host", host, "seq_id", capacityPayload.SequenceID)
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
 	if err != nil {
@@ -792,15 +801,15 @@ func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models
 		return fmt.Errorf("failed to unmarshal capacity metrics response: %v", err)
 	}
 
-	mgr.lo.Info("Received response for capacity metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+	mgr.lo.Debug("CAP metrics response", "code", r.ResponseCode, "status", resp.StatusCode)
 
 	// Handle NSE response codes regardless of HTTP status (NSE sends errors as HTTP 500 with JSON body)
 	// Note: Capacity metrics API returns responseCode 200 for success (different from other APIs that use 601)
 	if resp.StatusCode != http.StatusOK || (r.ResponseCode != NSE_RESP_CODE_SUCCESS && r.ResponseCode != 200) {
-		mgr.lo.Error("Capacity metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		mgr.lo.Error("CAP metrics failed", "code", r.ResponseCode, "desc", r.ResponseDesc)
 		switch r.ResponseCode {
 		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
-			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			mgr.lo.Warn("Token expired, relogging")
 			if err := mgr.Login(); err != nil {
 				mgr.lo.Error("Relogin attempt failed", "error", err)
 				return fmt.Errorf("failed to log in again: %v", err)
@@ -808,20 +817,10 @@ func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models
 			return fmt.Errorf("new token obtained after relogin, retrying capacity metrics push")
 
 		case NSE_RESP_CODE_INVALID_SEQ_ID:
-			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
-			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
-			if err != nil {
-				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
-				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
-			}
-			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
-			mgr.Lock()
-			mgr.capSeqID = expectedSeqID
-			mgr.Unlock()
-			return fmt.Errorf("sequence ID has been updated, retrying capacity metrics push")
+			return mgr.sequenceIDSyncHandler(r, "capacity")
 
 		default:
-			mgr.lo.Error("Capacity metrics push failed with unhandled response code", "response_code", r.ResponseCode)
+			mgr.lo.Error("CAP metrics failed", "response_code", r.ResponseCode)
 			return fmt.Errorf("capacity metrics push failed with unhandled response code: %d", r.ResponseCode)
 		}
 	}
