@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	USER_AGENT                    = "LAMAAPI/1.0.0"
 	NSE_RESP_CODE_SUCCESS         = 601
 	NSE_RESP_CODE_PARTIAL_SUCCESS = 602
 	NSE_RESP_CODE_INVALID_LOGIN   = 701
@@ -35,6 +34,7 @@ type Opts struct {
 	Password        string
 	Timeout         time.Duration
 	IdleConnTimeout time.Duration
+	UserAgent       string
 }
 
 // Manager provides access to the NSE LAMA API.
@@ -52,6 +52,7 @@ type Manager struct {
 	dbSeqID  int
 	hwSeqID  int
 	netSeqID int
+	capSeqID int
 }
 
 type LoginReq struct {
@@ -143,6 +144,26 @@ type AppReq struct {
 	Payload    []MetricPayload `json:"payload"`
 }
 
+// CapacityPayload represents the payload structure for capacity utilization metrics.
+// The capacity metrics API uses a different payload structure compared to other metrics:
+// - Other metrics (hardware, database, network, application) use an array of payload objects
+// - Capacity metrics use a single object containing a metricData array
+// This structure reflects the fact that capacity metrics are submitted once per day rather than every 5 minutes.
+type CapacityPayload struct {
+	MetricData []MetricData `json:"metricData"`
+}
+
+// CapacityReq represents the request structure for capacity utilization metrics.
+// Uses "segment" field to specify market segment (Capital Markets, F&O, etc.).
+type CapacityReq struct {
+	MemberID   string          `json:"memberId"`
+	ExchangeID int             `json:"exchangeId"`
+	SequenceID int             `json:"sequenceId"`
+	Segment    int             `json:"segment"` // Market segment identifier (1=Capital Markets, 2=F&O, etc.)
+	Timestamp  int64           `json:"timestamp"`
+	Payload    CapacityPayload `json:"payload"` // Single payload object for capacity metrics
+}
+
 func New(lo *slog.Logger, opts Opts) (*Manager, error) {
 	client := &http.Client{
 		Timeout: opts.Timeout,
@@ -156,7 +177,7 @@ func New(lo *slog.Logger, opts Opts) (*Manager, error) {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
 	h.Set("Referer", opts.URL)
-	h.Set("User-Agent", USER_AGENT)
+	h.Set("User-Agent", opts.UserAgent)
 	h.Set("Accept-Language", "en-US")
 	if strings.Contains(opts.URL, "uat") {
 		h.Add("Cookie", "test")
@@ -177,6 +198,7 @@ func New(lo *slog.Logger, opts Opts) (*Manager, error) {
 		hwSeqID:  1,
 		dbSeqID:  1,
 		netSeqID: 1,
+		capSeqID: 1,
 	}
 
 	return mgr, nil
@@ -714,5 +736,124 @@ func newMetricData(key string, avg float64, simple bool) MetricData {
 	return MetricData{
 		Key:   key,
 		Value: value,
+	}
+}
+
+// PushCapacityMetrics sends capacity utilization metrics to NSE LAMA API.
+func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models.CapacityPromResp, benchmarkCapacity float64) error {
+	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/cap-utilization")
+
+	mgr.RLock()
+	token := mgr.token
+	seqID := mgr.capSeqID
+	mgr.RUnlock()
+
+	// Create capacity request with segment=1 (Capital Markets) and benchmark capacity from config
+	// Segment values: 1=Capital Markets, 2=F&O, 3=Currency Derivatives, 4=Commodity
+	capacityPayload := createCapacityReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1, benchmarkCapacity)
+
+	payload, err := json.Marshal(capacityPayload)
+	if err != nil {
+		mgr.lo.Error("Failed to marshal capacity metrics payload", "error", err)
+		return fmt.Errorf("failed to marshal capacity metrics payload: %v", err)
+	}
+
+	mgr.lo.Info("Preparing to send capacity metrics", "host", host, "locationID", locationID, "URL", endpoint, "payload", string(payload), "headers", mgr.headers)
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(payload))
+	if err != nil {
+		mgr.lo.Error("Failed to create HTTP request", "error", err)
+		return fmt.Errorf("failed to create HTTP request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	for k, v := range mgr.headers {
+		req.Header.Set(k, strings.Join(v, ","))
+	}
+
+	resp, err := mgr.client.Do(req)
+	if err != nil {
+		mgr.lo.Error("Capacity metrics HTTP request failed", "error", err)
+		return fmt.Errorf("capacity metrics HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the raw response body for debugging
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		mgr.lo.Error("Failed to read capacity metrics response body", "error", err)
+		return fmt.Errorf("failed to read capacity metrics response body: %v", err)
+	}
+
+	var r MetricsResp
+	if err := json.Unmarshal(bodyBytes, &r); err != nil {
+		mgr.lo.Error("Failed to unmarshal capacity metrics response", "error", err, "raw_response", string(bodyBytes))
+		return fmt.Errorf("failed to unmarshal capacity metrics response: %v", err)
+	}
+
+	mgr.lo.Info("Received response for capacity metrics push", "response_code", r.ResponseCode, "response_description", r.ResponseDesc, "http_status", resp.StatusCode)
+
+	// Handle NSE response codes regardless of HTTP status (NSE sends errors as HTTP 500 with JSON body)
+	// Note: Capacity metrics API returns responseCode 200 for success (different from other APIs that use 601)
+	if resp.StatusCode != http.StatusOK || (r.ResponseCode != NSE_RESP_CODE_SUCCESS && r.ResponseCode != 200) {
+		mgr.lo.Error("Capacity metrics push failed", "response_code", r.ResponseCode, "response_desc", r.ResponseDesc, "errors", r.Errors)
+		switch r.ResponseCode {
+		case NSE_RESP_CODE_INVALID_TOKEN, NSE_RESP_CODE_EXPIRED_TOKEN:
+			mgr.lo.Warn("Token is invalid or expired, attempting to log in again")
+			if err := mgr.Login(); err != nil {
+				mgr.lo.Error("Relogin attempt failed", "error", err)
+				return fmt.Errorf("failed to log in again: %v", err)
+			}
+			return fmt.Errorf("new token obtained after relogin, retrying capacity metrics push")
+
+		case NSE_RESP_CODE_INVALID_SEQ_ID:
+			mgr.lo.Warn("Sequence ID is invalid, attempting to update")
+			expectedSeqID, err := extractExpectedSequenceID(r.ResponseDesc)
+			if err != nil {
+				mgr.lo.Error("Failed to extract expected sequence ID", "error", err)
+				return fmt.Errorf("failed to extract expected sequence ID: %v", err)
+			}
+			mgr.lo.Info("Expected sequence ID identified", "expected_seq_id", expectedSeqID)
+			mgr.Lock()
+			mgr.capSeqID = expectedSeqID
+			mgr.Unlock()
+			return fmt.Errorf("sequence ID has been updated, retrying capacity metrics push")
+
+		default:
+			mgr.lo.Error("Capacity metrics push failed with unhandled response code", "response_code", r.ResponseCode)
+			return fmt.Errorf("capacity metrics push failed with unhandled response code: %d", r.ResponseCode)
+		}
+	}
+
+	// Increment sequence ID on successful push
+	// Capacity API uses responseCode 200 for success (different from other APIs that use 601/602)
+	if r.ResponseCode == NSE_RESP_CODE_SUCCESS || r.ResponseCode == NSE_RESP_CODE_PARTIAL_SUCCESS || r.ResponseCode == 200 {
+		mgr.Lock()
+		mgr.capSeqID++
+		mgr.Unlock()
+	}
+
+	return nil
+}
+
+// createCapacityReq creates a capacity utilization request for NSE's capacity metrics API.
+// Capacity metrics track peak order performance against benchmark capacity and use:
+// - "peakOrder" for maximum orders per second achieved
+// - "benchmark" for installed capacity limit
+// Values are simple numbers rather than statistical objects (min/max/avg/med) used by other metrics.
+func createCapacityReq(metrics models.CapacityPromResp, memberId string, exchangeId, sequenceId, segmentId int, benchmarkCapacity float64) CapacityReq {
+	return CapacityReq{
+		MemberID:   memberId,
+		ExchangeID: exchangeId,
+		SequenceID: sequenceId,
+		Segment:    segmentId, // Market segment for capacity tracking
+		Timestamp:  time.Now().Unix(),
+		Payload: CapacityPayload{
+			MetricData: []MetricData{
+				newMetricData("peakOrder", metrics.OrdersCount, true), // Peak orders per second achieved
+				newMetricData("benchmark", benchmarkCapacity, true),   // Installed capacity benchmark
+			},
+		},
 	}
 }

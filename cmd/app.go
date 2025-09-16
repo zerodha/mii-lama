@@ -21,6 +21,7 @@ type App struct {
 	dbSvc          *dbService
 	networkSvc     *networkService
 	applicationSvc *applicationService
+	capacitySvc    *capacityService
 }
 
 type Opts struct {
@@ -49,6 +50,12 @@ type networkService struct {
 type applicationService struct {
 	hosts   HostConfig
 	queries map[string]string
+}
+
+type capacityService struct {
+	hosts     HostConfig
+	queries   map[string]string
+	benchmark map[string]float64
 }
 
 func (app *App) fetchHWMetrics() (map[int]models.HWPromResp, error) {
@@ -222,6 +229,43 @@ func (app *App) fetchApplicationMetrics() (map[int]models.AppPromResp, error) {
 	return appMetrics, nil
 }
 
+func (app *App) fetchCapacityMetrics() (map[int]models.CapacityPromResp, error) {
+	capacityMetrics := make(map[int]models.CapacityPromResp)
+
+	for locationID, host := range app.capacitySvc.hosts {
+		capacityMetricsResp := models.CapacityPromResp{}
+		for metric, query := range app.capacitySvc.queries {
+			switch metric {
+			case "orders_count":
+				value, err := app.metricsMgr.Query(fmt.Sprintf(query, host))
+				if err != nil {
+					app.lo.Error("Failed to query Prometheus",
+						"host", host,
+						"metric", metric,
+						"error", err)
+					continue
+				}
+				capacityMetricsResp.OrdersCount = value
+
+			default:
+				app.lo.Warn("Unknown capacity metric queried",
+					"host", host,
+					"metric", metric)
+			}
+		}
+
+		ordersCapacity := app.capacitySvc.benchmark["orders_per_second"]
+		if ordersCapacity > 0 {
+			capacityMetricsResp.Utilization = (capacityMetricsResp.OrdersCount / ordersCapacity) * 100
+		}
+
+		capacityMetrics[locationID] = capacityMetricsResp
+		app.lo.Debug("fetched capacity metrics", "host", host, "locationID", locationID, "data", capacityMetricsResp)
+	}
+
+	return capacityMetrics, nil
+}
+
 func (app *App) pushHWMetrics(locationID int, host string, data models.HWPromResp) error {
 	for i := 0; i < app.opts.MaxRetries; i++ {
 		if err := app.nseMgr.PushHWMetrics(locationID, host, data); err != nil {
@@ -307,6 +351,31 @@ func (app *App) pushApplicationMetrics(locationID int, host string, data models.
 				continue
 			}
 			app.lo.Error("Failed to push application metrics to NSE after max retries",
+				"host", host,
+				"locationID", locationID,
+				"max_retries", app.opts.MaxRetries,
+				"error", err)
+			return err
+		}
+		break
+	}
+	return nil
+}
+
+func (app *App) pushCapacityMetrics(locationID int, host string, data models.CapacityPromResp) error {
+	for i := 0; i < app.opts.MaxRetries; i++ {
+		ordersCapacity := app.capacitySvc.benchmark["orders_per_second"]
+		if err := app.nseMgr.PushCapacityMetrics(locationID, host, data, ordersCapacity); err != nil {
+			if i < app.opts.MaxRetries-1 {
+				app.lo.Error("Failed to push capacity metrics to NSE. Retrying...",
+					"host", host,
+					"locationID", locationID,
+					"attempt", i+1,
+					"error", err)
+				time.Sleep(app.opts.RetryInterval)
+				continue
+			}
+			app.lo.Error("Failed to push capacity metrics to NSE after max retries",
 				"host", host,
 				"locationID", locationID,
 				"max_retries", app.opts.MaxRetries,

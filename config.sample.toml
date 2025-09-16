@@ -12,6 +12,7 @@ member_id = "redacted"
 password = "redacted"
 timeout = "30s" # Timeout for HTTP requests
 url = "https://lama.nse.internal" # Endpoint for NSE LAMA API Gateway
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36" # User-Agent header for HTTP requests
 
 [prometheus]
 endpoint = "http://prometheus:9090" # Endpoint for Prometheus API
@@ -54,3 +55,14 @@ throughput = 'sum(sum without (hostname, instance, server) (rate(haproxy_server_
 [metrics.application.hosts]
 1 = "app-1.1.1.1"
 2 = "app-1.1.1.2"
+
+[metrics.capacity] # Define Prometheus queries and benchmark capacity for order metrics
+# Get peak orders/sec over last 3 hours, grouped by namespace for a single number
+orders_count = 'max_over_time(sum(rate(app_orders_count{hostname="%s"}[5m])) by (namespace)[3h])'
+
+[metrics.capacity.hosts]
+1 = "app-1.2.3.4"
+
+[metrics.capacity.benchmark]
+# Benchmark installed capacity for orders per second by exchange and segment
+orders_per_second = 1000.0

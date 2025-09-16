@@ -29,3 +29,9 @@ type AppMetric struct {
 	Name  string  `json:"name"`
 	Value float64 `json:"value"`
 }
+
+// CapacityPromResp is the response from the Prometheus HTTP API for capacity utilization metrics.
+type CapacityPromResp struct {
+	OrdersCount float64 `json:"orders_count"`
+	Utilization float64 `json:"utilization"`
+}

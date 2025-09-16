@@ -59,6 +59,13 @@ func main() {
 		exit()
 	}
 
+	// Load queries for capacity metrics.
+	capacitySvc, err := initCapacitySvc(ko)
+	if err != nil {
+		lo.Error("failed to init capacity service", "error", err)
+		exit()
+	}
+
 	// Initialise the NSE manager.
 	nseMgr, err := initNSEManager(ko, lo)
 	if err != nil {
@@ -76,6 +83,7 @@ func main() {
 		dbSvc:          dbSvc,
 		networkSvc:     networkSvc,
 		applicationSvc: applicationSvc,
+		capacitySvc:    capacitySvc,
 	}
 
 	// Create a new context which is cancelled when `SIGINT`/`SIGTERM` is received.
@@ -95,6 +103,9 @@ func main() {
 
 	wg.Add(1)
 	go app.syncApplicationMetricsWorker(ctx, wg)
+
+	wg.Add(1)
+	go app.syncCapacityMetricsWorker(ctx, wg)
 
 	// Listen on the close channel indefinitely until a
 	// `SIGINT` or `SIGTERM` is received.
@@ -223,6 +234,36 @@ func (app *App) syncApplicationMetricsWorker(ctx context.Context, wg *sync.WaitG
 			}
 		case <-ctx.Done():
 			app.lo.Info("Stopping application metrics worker")
+			return
+		}
+	}
+}
+
+func (app *App) syncCapacityMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(app.opts.SyncInterval)
+	defer ticker.Stop()
+
+	app.lo.Info("Starting capacity metrics worker", "interval", app.opts.SyncInterval)
+	for {
+		select {
+		case <-ticker.C:
+			data, err := app.fetchCapacityMetrics()
+			if err != nil {
+				app.lo.Error("Failed to fetch capacity metrics", "error", err)
+				continue
+			}
+
+			// Push to upstream LAMA APIs.
+			for locationID, hostData := range data {
+				if err := app.pushCapacityMetrics(locationID, app.capacitySvc.hosts[locationID], hostData); err != nil {
+					app.lo.Error("Failed to push capacity metrics to NSE", "locationID", locationID, "error", err)
+					continue
+				}
+			}
+		case <-ctx.Done():
+			app.lo.Info("Stopping capacity metrics worker")
 			return
 		}
 	}
