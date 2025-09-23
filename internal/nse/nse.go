@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -21,6 +22,7 @@ const (
 	NSE_RESP_CODE_PARTIAL_SUCCESS = 602
 	NSE_RESP_CODE_INVALID_LOGIN   = 701
 	NSE_RESP_CODE_INVALID_SEQ_ID  = 704
+	NSE_RESP_CODE_INVALID_REQUEST = 706
 	NSE_RESP_CODE_INVALID_TOKEN   = 801
 	NSE_RESP_CODE_EXPIRED_TOKEN   = 802
 
@@ -749,7 +751,7 @@ func newMetricData(key string, avg float64, simple bool) MetricData {
 }
 
 // PushCapacityMetrics sends capacity utilization metrics to NSE LAMA API.
-func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models.CapacityPromResp, benchmarkCapacity float64) error {
+func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models.CapacityPromResp, benchmarkCapacity float64, segmentID int) error {
 	endpoint := fmt.Sprintf("%s%s", mgr.opts.URL, "/api/V1/metrics/cap-utilization")
 
 	mgr.RLock()
@@ -757,9 +759,8 @@ func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models
 	seqID := mgr.capSeqID
 	mgr.RUnlock()
 
-	// Create capacity request with segment=1 (Capital Markets) and benchmark capacity from config
-	// Segment values: 1=Capital Markets, 2=F&O, 3=Currency Derivatives, 4=Commodity
-	capacityPayload := createCapacityReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, 1, benchmarkCapacity)
+	// Use the provided segment ID
+	capacityPayload := createCapacityReq(data, mgr.opts.MemberID, mgr.opts.ExchangeID, seqID, segmentID, benchmarkCapacity)
 
 	payload, err := json.Marshal(capacityPayload)
 	if err != nil {
@@ -819,6 +820,11 @@ func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models
 		case NSE_RESP_CODE_INVALID_SEQ_ID:
 			return mgr.sequenceIDSyncHandler(r, "capacity")
 
+		case NSE_RESP_CODE_INVALID_REQUEST:
+			roundedOrders := math.Round(data.OrdersCount)
+			mgr.lo.Error("CAP metrics validation failed", "response_code", r.ResponseCode, "desc", r.ResponseDesc, "segment", segmentID, "orders_count", data.OrdersCount, "rounded_orders", roundedOrders, "benchmark", benchmarkCapacity)
+			return fmt.Errorf("capacity metrics request invalid: %s", r.ResponseDesc)
+
 		default:
 			mgr.lo.Error("CAP metrics failed", "response_code", r.ResponseCode)
 			return fmt.Errorf("capacity metrics push failed with unhandled response code: %d", r.ResponseCode)
@@ -841,7 +847,11 @@ func (mgr *Manager) PushCapacityMetrics(locationID int, host string, data models
 // - "peakOrder" for maximum orders per second achieved
 // - "benchmark" for installed capacity limit
 // Values are simple numbers rather than statistical objects (min/max/avg/med) used by other metrics.
+// Segment ID maps to market segments: 1=Capital Markets, 2=F&O, 3=Currency Derivatives, 4=Commodity
 func createCapacityReq(metrics models.CapacityPromResp, memberId string, exchangeId, sequenceId, segmentId int, benchmarkCapacity float64) CapacityReq {
+	// Round orders count to nearest integer as required by API
+	roundedOrdersCount := math.Round(metrics.OrdersCount)
+
 	return CapacityReq{
 		MemberID:   memberId,
 		ExchangeID: exchangeId,
@@ -850,8 +860,8 @@ func createCapacityReq(metrics models.CapacityPromResp, memberId string, exchang
 		Timestamp:  time.Now().Unix(),
 		Payload: CapacityPayload{
 			MetricData: []MetricData{
-				newMetricData("peakOrder", metrics.OrdersCount, true), // Peak orders per second achieved
-				newMetricData("benchmark", benchmarkCapacity, true),   // Installed capacity benchmark
+				newMetricData("benchmark", benchmarkCapacity, true),  // Installed capacity benchmark (first)
+				newMetricData("peakOrder", roundedOrdersCount, true), // Peak orders per second achieved (second, rounded)
 			},
 		},
 	}

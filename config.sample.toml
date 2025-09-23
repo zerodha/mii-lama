@@ -57,12 +57,15 @@ throughput = 'sum(sum without (hostname, instance, server) (rate(haproxy_server_
 2 = "app-1.1.1.2"
 
 [metrics.capacity] # Define Prometheus queries and benchmark capacity for order metrics
-# Get peak orders/sec over last 3 hours, grouped by namespace for a single number
-orders_count = 'max_over_time(sum(rate(app_orders_count{hostname="%s"}[5m])) by (namespace)[3h])'
+# Get peak orders/sec over last 12 hours, grouped by segment
+orders_count = 'max_over_time(sum(rate(kite_admin_db_orders_count{}[5m])) by (segment)[12h])'
 
 [metrics.capacity.hosts]
 1 = "app-1.2.3.4"
 
 [metrics.capacity.benchmark]
-# Benchmark installed capacity for orders per second by exchange and segment
+# Benchmark installed capacity for orders per second (single value for all segments)
 orders_per_second = 1000.0
+
+# Segment mapping is now handled by pattern matching in code:
+# 1=Capital Markets (NSE, BSE), 2=F&O (all -FUT/-OPT), 3=Currency Derivatives (CDS), 4=Commodity (MCX)

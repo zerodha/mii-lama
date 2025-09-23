@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"math"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/zerodha/mii-lama/pkg/models"
 )
 
 var (
@@ -255,11 +258,43 @@ func (app *App) syncCapacityMetricsWorker(ctx context.Context, wg *sync.WaitGrou
 				continue
 			}
 
-			// Push to upstream LAMA APIs.
-			for locationID, hostData := range data {
-				if err := app.pushCapacityMetrics(locationID, app.capacitySvc.hosts[locationID], hostData); err != nil {
-					app.lo.Error("Failed to push capacity metrics to NSE", "locationID", locationID, "error", err)
-					continue
+			// Push metrics to NSE for each segment, aggregating by segment ID
+			for locationID, segmentData := range data {
+				host := app.capacitySvc.hosts[locationID]
+
+				// Aggregate segments by their segment ID
+				aggregatedData := make(map[int]models.CapacityPromResp)
+
+				for segment, metricData := range segmentData {
+					// Skip segments with no order data or very low counts that round to 0
+					roundedOrders := math.Round(metricData.OrdersCount)
+					if metricData.OrdersCount <= 0 || roundedOrders <= 0 {
+						app.lo.Debug("Skipping segment with low/no orders", "segment", segment, "orders_count", metricData.OrdersCount, "rounded", roundedOrders)
+						continue
+					}
+
+					segmentID := getSegmentID(segment)
+					if existing, exists := aggregatedData[segmentID]; exists {
+						// Aggregate orders count for same segment ID
+						existing.OrdersCount += metricData.OrdersCount
+						aggregatedData[segmentID] = existing
+						app.lo.Debug("Aggregating segment data", "segment", segment, "segment_id", segmentID, "additional_orders", metricData.OrdersCount)
+					} else {
+						// First segment for this ID - create new entry
+						aggregatedData[segmentID] = models.CapacityPromResp{
+							OrdersCount: metricData.OrdersCount,
+							Utilization: metricData.Utilization,
+							Segment:     segment, // Store representative segment name
+						}
+					}
+				}
+
+				// Send aggregated data for each segment ID
+				for segmentID, metricData := range aggregatedData {
+					if err := app.pushCapacityMetrics(locationID, host, metricData); err != nil {
+						app.lo.Error("Failed to push capacity metrics to NSE", "segment_id", segmentID, "error", err)
+						continue
+					}
 				}
 			}
 		case <-ctx.Done():

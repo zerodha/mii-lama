@@ -208,9 +208,7 @@ func initCapacitySvc(ko *koanf.Koanf) (*capacityService, error) {
 			"orders_count": ko.MustString("metrics.capacity.orders_count"),
 		}
 		hosts     HostConfig
-		benchmark = map[string]float64{
-			"orders_per_second": ko.MustFloat64("metrics.capacity.benchmark.orders_per_second"),
-		}
+		benchmark float64
 	)
 
 	if err := ko.Unmarshal("metrics.capacity.hosts", &hosts); err != nil {
@@ -220,6 +218,8 @@ func initCapacitySvc(ko *koanf.Koanf) (*capacityService, error) {
 	if len(hosts) == 0 {
 		return nil, fmt.Errorf("no hosts found in the config for capacity metrics")
 	}
+
+	benchmark = ko.MustFloat64("metrics.capacity.benchmark.orders_per_second")
 
 	return &capacityService{
 		hosts:     hosts,

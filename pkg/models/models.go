@@ -34,4 +34,5 @@ type AppMetric struct {
 type CapacityPromResp struct {
 	OrdersCount float64 `json:"orders_count"`
 	Utilization float64 `json:"utilization"`
+	Segment     string  `json:"segment"` // Market segment name (e.g., "NSE", "BSE", "NSE-FUT") - used for segment ID mapping
 }
