@@ -650,8 +650,8 @@ func createAppReq(metrics models.AppPromResp, memberId string, exchangeId, seque
 				MetricData: []MetricData{
 					newMetricData("throughput", float64(metrics.Throughput), false),
 					newMetricData("failureTradeApi", float64(metrics.FailureCount), true),
-					newMetricData("latency", 0.0, false),
-					newMetricData("failureAuthentication", 0.0, true),
+					newMetricData("latency", float64(metrics.Latency), false),
+					newMetricData("failureAuthentication", float64(metrics.FailureAuth), true),
 				},
 			},
 		},

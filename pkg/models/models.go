@@ -21,7 +21,9 @@ type NetworkPromResp struct {
 // AppPromResp is the response from the Prometheus HTTP API for application metrics.
 type AppPromResp struct {
 	Throughput   float64 `json:"throughput"`
-	FailureCount float64 `json:"failure_count"`
+	Latency      float64 `json:"latency"`       // Response time in microseconds
+	FailureCount float64 `json:"failure_count"` // 5xx errors (Trading API failures)
+	FailureAuth  float64 `json:"failure_auth"`  // 4xx errors (Client Authentication failures)
 }
 
 // AppMetric represents an individual application metric.

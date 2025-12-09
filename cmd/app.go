@@ -205,6 +205,18 @@ func (app *App) fetchApplicationMetrics() (map[int]models.AppPromResp, error) {
 				}
 				appMetricsResp.Throughput = value
 
+			case "latency":
+				value, err := app.metricsMgr.Query(query)
+				if err != nil {
+					app.lo.Error("Failed to query Prometheus",
+						"host", host,
+						"metric", metric,
+						"error", err)
+					continue
+				}
+				// Convert seconds to microseconds as required by NSE API
+				appMetricsResp.Latency = value * 1_000_000
+
 			case "failure_count":
 				value, err := app.metricsMgr.Query(query)
 				if err != nil {
@@ -215,6 +227,17 @@ func (app *App) fetchApplicationMetrics() (map[int]models.AppPromResp, error) {
 					continue
 				}
 				appMetricsResp.FailureCount = value
+
+			case "failure_auth":
+				value, err := app.metricsMgr.Query(query)
+				if err != nil {
+					app.lo.Error("Failed to query Prometheus",
+						"host", host,
+						"metric", metric,
+						"error", err)
+					continue
+				}
+				appMetricsResp.FailureAuth = value
 
 			default:
 				app.lo.Warn("Unknown application metric queried",

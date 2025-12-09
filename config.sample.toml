@@ -50,6 +50,8 @@ packet_errors = 'sum(rate(node_network_receive_errs_total{hostname="%s"}[5m])) +
 
 [metrics.application]
 failure_count = 'sum(sum without (hostname, instance, server) (rate(haproxy_server_http_responses_total{job="my-app",code="5xx",proxy="my-backend"}[5m]))) by (code)'
+failure_auth = 'sum(sum without (hostname, instance, server) (rate(haproxy_server_http_responses_total{job="my-app",code="4xx",proxy="my-backend"}[5m]))) by (code)'
+latency = 'sum(sum without (hostname, instance, server) (haproxy_backend_response_time_average_seconds{job="my-app",proxy="my-backend"})) by (proxy)'
 throughput = 'sum(sum without (hostname, instance, server) (rate(haproxy_server_http_responses_total{job="my-app",proxy="my-backend"}[5m]))) by (proxy)'
 
 [metrics.application.hosts]
