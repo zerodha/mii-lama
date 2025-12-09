@@ -21,11 +21,20 @@ type NetworkPromResp struct {
 // AppPromResp is the response from the Prometheus HTTP API for application metrics.
 type AppPromResp struct {
 	Throughput   float64 `json:"throughput"`
-	FailureCount float64 `json:"failure_count"`
+	Latency      float64 `json:"latency"`       // Response time in microseconds
+	FailureCount float64 `json:"failure_count"` // 5xx errors (Trading API failures)
+	FailureAuth  float64 `json:"failure_auth"`  // 4xx errors (Client Authentication failures)
 }
 
 // AppMetric represents an individual application metric.
 type AppMetric struct {
 	Name  string  `json:"name"`
 	Value float64 `json:"value"`
+}
+
+// CapacityPromResp is the response from the Prometheus HTTP API for capacity utilization metrics.
+type CapacityPromResp struct {
+	OrdersCount float64 `json:"orders_count"`
+	Utilization float64 `json:"utilization"`
+	Segment     string  `json:"segment"` // Market segment name (e.g., "NSE", "BSE", "NSE-FUT") - used for segment ID mapping
 }

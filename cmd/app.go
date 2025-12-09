@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zerodha/mii-lama/internal/metrics"
@@ -21,6 +22,7 @@ type App struct {
 	dbSvc          *dbService
 	networkSvc     *networkService
 	applicationSvc *applicationService
+	capacitySvc    *capacityService
 }
 
 type Opts struct {
@@ -49,6 +51,12 @@ type networkService struct {
 type applicationService struct {
 	hosts   HostConfig
 	queries map[string]string
+}
+
+type capacityService struct {
+	hosts     HostConfig
+	queries   map[string]string
+	benchmark float64
 }
 
 func (app *App) fetchHWMetrics() (map[int]models.HWPromResp, error) {
@@ -197,6 +205,18 @@ func (app *App) fetchApplicationMetrics() (map[int]models.AppPromResp, error) {
 				}
 				appMetricsResp.Throughput = value
 
+			case "latency":
+				value, err := app.metricsMgr.Query(query)
+				if err != nil {
+					app.lo.Error("Failed to query Prometheus",
+						"host", host,
+						"metric", metric,
+						"error", err)
+					continue
+				}
+				// Convert seconds to microseconds as required by NSE API
+				appMetricsResp.Latency = value * 1_000_000
+
 			case "failure_count":
 				value, err := app.metricsMgr.Query(query)
 				if err != nil {
@@ -207,6 +227,17 @@ func (app *App) fetchApplicationMetrics() (map[int]models.AppPromResp, error) {
 					continue
 				}
 				appMetricsResp.FailureCount = value
+
+			case "failure_auth":
+				value, err := app.metricsMgr.Query(query)
+				if err != nil {
+					app.lo.Error("Failed to query Prometheus",
+						"host", host,
+						"metric", metric,
+						"error", err)
+					continue
+				}
+				appMetricsResp.FailureAuth = value
 
 			default:
 				app.lo.Warn("Unknown application metric queried",
@@ -222,98 +253,114 @@ func (app *App) fetchApplicationMetrics() (map[int]models.AppPromResp, error) {
 	return appMetrics, nil
 }
 
-func (app *App) pushHWMetrics(locationID int, host string, data models.HWPromResp) error {
+func (app *App) fetchCapacityMetrics() (map[int]map[string]models.CapacityPromResp, error) {
+	capacityMetrics := make(map[int]map[string]models.CapacityPromResp)
+
+	for locationID := range app.capacitySvc.hosts {
+		capacityMetrics[locationID] = make(map[string]models.CapacityPromResp)
+
+		for metric, query := range app.capacitySvc.queries {
+			switch metric {
+			case "orders_count":
+				values, err := app.metricsMgr.QueryMap(query, "segment")
+				if err != nil {
+					app.lo.Error("Failed to fetch capacity metrics from Prometheus", "error", err)
+					continue
+				}
+
+				for segment, value := range values {
+					if _, exists := capacityMetrics[locationID][segment]; !exists {
+						capacityMetrics[locationID][segment] = models.CapacityPromResp{Segment: segment}
+					}
+					resp := capacityMetrics[locationID][segment]
+					resp.OrdersCount = value
+					capacityMetrics[locationID][segment] = resp
+				}
+
+			default:
+				app.lo.Warn("Unknown capacity metric", "metric", metric)
+			}
+		}
+
+		// Calculate utilization for each segment
+		for segment, resp := range capacityMetrics[locationID] {
+			if app.capacitySvc.benchmark > 0 {
+				resp.Utilization = (resp.OrdersCount / app.capacitySvc.benchmark) * 100
+				capacityMetrics[locationID][segment] = resp
+			}
+		}
+	}
+
+	return capacityMetrics, nil
+}
+
+func (app *App) retryPushWithSequenceSync(operation func() error, operationType, host string, locationID int) error {
 	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushHWMetrics(locationID, host, data); err != nil {
+		if err := operation(); err != nil {
 			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push hardware metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
+				if strings.Contains(err.Error(), "sequence ID") && strings.Contains(err.Error(), "updated") {
+					app.lo.Debug("Retrying after sequence sync", "type", operationType)
+				} else {
+					app.lo.Warn("Push failed, retrying", "type", operationType, "error", err)
+				}
 				time.Sleep(app.opts.RetryInterval)
 				continue
 			}
-			app.lo.Error("Failed to push hardware metrics to NSE after max retries",
-				"host", host,
-				"locationID", locationID,
-				"max_retries", app.opts.MaxRetries,
-				"error", err)
+			app.lo.Error("Push failed after retries", "type", operationType, "error", err)
 			return err
 		}
 		break
 	}
 	return nil
+}
+
+func (app *App) pushHWMetrics(locationID int, host string, data models.HWPromResp) error {
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushHWMetrics(locationID, host, data) },
+		"hardware", host, locationID)
 }
 
 func (app *App) pushDBMetrics(locationID int, host string, data models.DBPromResp) error {
-	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushDBMetrics(locationID, host, data); err != nil {
-			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push database metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
-				time.Sleep(app.opts.RetryInterval)
-				continue
-			}
-			app.lo.Error("Failed to push database metrics to NSE after max retries",
-				"host", host,
-				"locationID", locationID,
-				"max_retries", app.opts.MaxRetries,
-				"error", err)
-			return err
-		}
-		break
-	}
-	return nil
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushDBMetrics(locationID, host, data) },
+		"database", host, locationID)
 }
 
 func (app *App) pushNetworkMetrics(locationID int, host string, data models.NetworkPromResp) error {
-	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushNetworkMetrics(locationID, host, data); err != nil {
-			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push network metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
-				time.Sleep(app.opts.RetryInterval)
-				continue
-			}
-			app.lo.Error("Failed to push network metrics to NSE after max retries",
-				"host", host,
-				"locationID", locationID,
-				"max_retries", app.opts.MaxRetries,
-				"error", err)
-			return err
-		}
-		break
-	}
-	return nil
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushNetworkMetrics(locationID, host, data) },
+		"network", host, locationID)
 }
 
 func (app *App) pushApplicationMetrics(locationID int, host string, data models.AppPromResp) error {
-	for i := 0; i < app.opts.MaxRetries; i++ {
-		if err := app.nseMgr.PushAppMetrics(locationID, host, data); err != nil {
-			if i < app.opts.MaxRetries-1 {
-				app.lo.Error("Failed to push application metrics to NSE. Retrying...",
-					"host", host,
-					"locationID", locationID,
-					"attempt", i+1,
-					"error", err)
-				time.Sleep(app.opts.RetryInterval)
-				continue
-			}
-			app.lo.Error("Failed to push application metrics to NSE after max retries",
-				"host", host,
-				"locationID", locationID,
-				"max_retries", app.opts.MaxRetries,
-				"error", err)
-			return err
-		}
-		break
+	return app.retryPushWithSequenceSync(
+		func() error { return app.nseMgr.PushAppMetrics(locationID, host, data) },
+		"application", host, locationID)
+}
+
+// getSegmentID maps segment names to NSE segment IDs based on patterns:
+// 1=Capital Markets (NSE, BSE), 2=F&O (all -FUT/-OPT), 3=Currency Derivatives (CDS), 4=Commodity (MCX)
+func getSegmentID(segmentName string) int {
+	switch {
+	case segmentName == "NSE" || segmentName == "BSE":
+		return 1 // Capital Markets
+	case strings.Contains(segmentName, "CDS"):
+		return 3 // Currency Derivatives
+	case strings.Contains(segmentName, "MCX"):
+		return 4 // Commodity
+	case strings.Contains(segmentName, "-FUT") || strings.Contains(segmentName, "-OPT"):
+		return 2 // F&O
+	default:
+		return 1 // Default to Capital Markets
 	}
-	return nil
+}
+
+func (app *App) pushCapacityMetrics(locationID int, host string, data models.CapacityPromResp) error {
+	segmentID := getSegmentID(data.Segment)
+
+	return app.retryPushWithSequenceSync(
+		func() error {
+			return app.nseMgr.PushCapacityMetrics(locationID, host, data, app.capacitySvc.benchmark, segmentID)
+		},
+		"capacity", host, locationID)
 }

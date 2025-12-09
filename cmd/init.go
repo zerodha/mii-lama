@@ -183,6 +183,8 @@ func initApplicationSvc(ko *koanf.Koanf) (*applicationService, error) {
 	var (
 		queries = map[string]string{
 			"failure_count": ko.MustString("metrics.application.failure_count"),
+			"failure_auth":  ko.MustString("metrics.application.failure_auth"),
+			"latency":       ko.MustString("metrics.application.latency"),
 			"throughput":    ko.MustString("metrics.application.throughput"),
 		}
 		hosts HostConfig
@@ -202,15 +204,43 @@ func initApplicationSvc(ko *koanf.Koanf) (*applicationService, error) {
 	}, nil
 }
 
+func initCapacitySvc(ko *koanf.Koanf) (*capacityService, error) {
+	var (
+		queries = map[string]string{
+			"orders_count": ko.MustString("metrics.capacity.orders_count"),
+		}
+		hosts     HostConfig
+		benchmark float64
+	)
+
+	if err := ko.Unmarshal("metrics.capacity.hosts", &hosts); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal capacity hosts: %v", err)
+	}
+
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("no hosts found in the config for capacity metrics")
+	}
+
+	benchmark = ko.MustFloat64("metrics.capacity.benchmark.orders_per_second")
+
+	return &capacityService{
+		hosts:     hosts,
+		queries:   queries,
+		benchmark: benchmark,
+	}, nil
+}
+
 // initNSEManager initialises the NSE manager.
 func initNSEManager(ko *koanf.Koanf, lo *slog.Logger) (*nse.Manager, error) {
 	nseMgr, err := nse.New(lo, nse.Opts{
-		URL:        ko.MustString("lama.nse.url"),
-		LoginID:    ko.MustString("lama.nse.login_id"),
-		MemberID:   ko.MustString("lama.nse.member_id"),
-		ExchangeID: ko.MustInt("lama.nse.exchange_id"),
-		Password:   ko.MustString("lama.nse.password"),
-		Timeout:    ko.MustDuration("lama.nse.timeout"),
+		URL:             ko.MustString("lama.nse.url"),
+		LoginID:         ko.MustString("lama.nse.login_id"),
+		MemberID:        ko.MustString("lama.nse.member_id"),
+		ExchangeID:      ko.MustInt("lama.nse.exchange_id"),
+		Password:        ko.MustString("lama.nse.password"),
+		Timeout:         ko.MustDuration("lama.nse.timeout"),
+		IdleConnTimeout: ko.MustDuration("lama.nse.idle_timeout"),
+		UserAgent:       ko.MustString("lama.nse.user_agent"),
 	})
 	if err != nil {
 		return nil, err

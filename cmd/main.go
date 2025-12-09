@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"math"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/zerodha/mii-lama/pkg/models"
 )
 
 var (
@@ -59,6 +62,13 @@ func main() {
 		exit()
 	}
 
+	// Load queries for capacity metrics.
+	capacitySvc, err := initCapacitySvc(ko)
+	if err != nil {
+		lo.Error("failed to init capacity service", "error", err)
+		exit()
+	}
+
 	// Initialise the NSE manager.
 	nseMgr, err := initNSEManager(ko, lo)
 	if err != nil {
@@ -76,6 +86,7 @@ func main() {
 		dbSvc:          dbSvc,
 		networkSvc:     networkSvc,
 		applicationSvc: applicationSvc,
+		capacitySvc:    capacitySvc,
 	}
 
 	// Create a new context which is cancelled when `SIGINT`/`SIGTERM` is received.
@@ -95,6 +106,9 @@ func main() {
 
 	wg.Add(1)
 	go app.syncApplicationMetricsWorker(ctx, wg)
+
+	wg.Add(1)
+	go app.syncCapacityMetricsWorker(ctx, wg)
 
 	// Listen on the close channel indefinitely until a
 	// `SIGINT` or `SIGTERM` is received.
@@ -223,6 +237,68 @@ func (app *App) syncApplicationMetricsWorker(ctx context.Context, wg *sync.WaitG
 			}
 		case <-ctx.Done():
 			app.lo.Info("Stopping application metrics worker")
+			return
+		}
+	}
+}
+
+func (app *App) syncCapacityMetricsWorker(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	ticker := time.NewTicker(app.opts.SyncInterval)
+	defer ticker.Stop()
+
+	app.lo.Info("Starting capacity metrics worker", "interval", app.opts.SyncInterval)
+	for {
+		select {
+		case <-ticker.C:
+			data, err := app.fetchCapacityMetrics()
+			if err != nil {
+				app.lo.Error("Failed to fetch capacity metrics", "error", err)
+				continue
+			}
+
+			// Push metrics to NSE for each segment, aggregating by segment ID
+			for locationID, segmentData := range data {
+				host := app.capacitySvc.hosts[locationID]
+
+				// Aggregate segments by their segment ID
+				aggregatedData := make(map[int]models.CapacityPromResp)
+
+				for segment, metricData := range segmentData {
+					// Skip segments with no order data or very low counts that round to 0
+					roundedOrders := math.Round(metricData.OrdersCount)
+					if metricData.OrdersCount <= 0 || roundedOrders <= 0 {
+						app.lo.Debug("Skipping segment with low/no orders", "segment", segment, "orders_count", metricData.OrdersCount, "rounded", roundedOrders)
+						continue
+					}
+
+					segmentID := getSegmentID(segment)
+					if existing, exists := aggregatedData[segmentID]; exists {
+						// Aggregate orders count for same segment ID
+						existing.OrdersCount += metricData.OrdersCount
+						aggregatedData[segmentID] = existing
+						app.lo.Debug("Aggregating segment data", "segment", segment, "segment_id", segmentID, "additional_orders", metricData.OrdersCount)
+					} else {
+						// First segment for this ID - create new entry
+						aggregatedData[segmentID] = models.CapacityPromResp{
+							OrdersCount: metricData.OrdersCount,
+							Utilization: metricData.Utilization,
+							Segment:     segment, // Store representative segment name
+						}
+					}
+				}
+
+				// Send aggregated data for each segment ID
+				for segmentID, metricData := range aggregatedData {
+					if err := app.pushCapacityMetrics(locationID, host, metricData); err != nil {
+						app.lo.Error("Failed to push capacity metrics to NSE", "segment_id", segmentID, "error", err)
+						continue
+					}
+				}
+			}
+		case <-ctx.Done():
+			app.lo.Info("Stopping capacity metrics worker")
 			return
 		}
 	}
