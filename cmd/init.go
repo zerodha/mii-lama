@@ -183,6 +183,8 @@ func initApplicationSvc(ko *koanf.Koanf) (*applicationService, error) {
 	var (
 		queries = map[string]string{
 			"failure_count": ko.MustString("metrics.application.failure_count"),
+			"failure_auth":  ko.MustString("metrics.application.failure_auth"),
+			"latency":       ko.MustString("metrics.application.latency"),
 			"throughput":    ko.MustString("metrics.application.throughput"),
 		}
 		hosts HostConfig
